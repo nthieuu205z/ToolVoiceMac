@@ -53,14 +53,18 @@ _PREVIEW_TEXT = "Xin chào, đây là giọng đọc tiếng Việt dùng để 
 
 
 @router.get("/api/voices")
-def list_voices() -> list[dict]:
+def list_voices(language: str | None = None) -> list[dict]:
     """Kèm `preview_url` khi đã có file nghe thử; chưa có thì để rỗng, giao diện tự ẩn nút."""
     result = []
-    for voice in available_voices(settings.tts_provider, settings.resolved_clone_provider):
+    for voice in available_voices(
+        settings.tts_provider, settings.resolved_clone_provider, language=language,
+    ):
         preview = _preview_path(voice.id)
         result.append({
             "id": voice.id,
             "display_name": voice.display_name,
+            "provider": voice.provider,
+            "supported_languages": voice.supported_languages,
             "preview_url": f"/previews/{voice.id}.wav" if preview.is_file() else "",
             "custom": custom_voices.is_custom(voice.id),
         })

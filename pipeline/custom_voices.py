@@ -45,6 +45,7 @@ class CustomVoice:
     id: str
     display_name: str
     created_at: float
+    supported_languages: tuple[str, ...] = ("vi-VN", "en-US")
 
 
 def slugify(name: str) -> str:

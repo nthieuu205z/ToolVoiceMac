@@ -30,7 +30,38 @@ def test_voices_endpoint_shape_matches_frontend_expectations(client):
     # Tính trong thân test: danh sách giọng phụ thuộc kho giọng nhân bản mà fixture
     # autouse đã cách ly — VOICES ở cấp module được tính TRƯỚC khi fixture chạy.
     assert len(body) == len(voices_for(settings.tts_provider))
-    assert set(body[0]) == {"id", "display_name", "preview_url", "custom"}
+    assert {"id", "display_name", "preview_url", "custom"} <= set(body[0])
+    assert body[0]["provider"] == settings.tts_provider
+    assert body[0]["supported_languages"] == ["vi-VN"]
+
+
+def test_languages_endpoint_lists_supported_workflows(client):
+    assert client.get("/api/languages").json() == [
+        {
+            "code": "vi-VN",
+            "display_name": "Tiếng Việt",
+            "english_name": "Vietnamese",
+            "video_dubbing": True,
+            "text_to_voice": True,
+        },
+        {
+            "code": "en-US",
+            "display_name": "English (US)",
+            "english_name": "English",
+            "video_dubbing": True,
+            "text_to_voice": True,
+        },
+    ]
+
+
+def test_voices_endpoint_filters_by_language(client, monkeypatch):
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+
+    body = client.get("/api/voices", params={"language": "en"}).json()
+
+    assert "vi-VN-HoaiMyNeural" not in {voice["id"] for voice in body}
+    assert "en-US-AvaMultilingualNeural" in {voice["id"] for voice in body}
+    assert all("en-US" in voice["supported_languages"] for voice in body)
 
 
 def test_voice_preview_endpoint_serves_a_known_preview(client, tmp_path, monkeypatch):
