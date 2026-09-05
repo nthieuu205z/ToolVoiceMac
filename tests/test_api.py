@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.config import settings
+from backend.job_contracts import JobArtifact
 from backend.job_manager import Job, manager
 from backend.main import app
 from pipeline.voices import voices_for
@@ -176,7 +177,6 @@ def test_rejects_upload_when_api_key_missing(client, monkeypatch):
 
 def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_path):
     """Nhiều video cùng lúc: video thứ hai vào danh sách chứ không bị 409 như trước."""
-    import backend.job_manager as jm
     from pipeline.models import MediaInfo, PipelineResult
 
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
@@ -184,7 +184,7 @@ def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_p
     monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
     monkeypatch.setattr("backend.routes.jobs.probe_video",
                         lambda p: MediaInfo(duration=1.0, video_codec="h264", has_audio=True))
-    monkeypatch.setattr(jm, "run_pipeline",
+    monkeypatch.setattr("backend.routes.jobs.run_pipeline",
                         lambda *a, **k: PipelineResult(video_path="v.mp4", srt_path="v.srt"))
     _put(Job(id="busy", filename="a.mp4", workdir=tmp_path, voice_id="Kore", status="running"))
 
@@ -203,7 +203,7 @@ def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_p
 def test_create_job_normalizes_and_forwards_target_language(client, monkeypatch, tmp_path):
     from types import SimpleNamespace
 
-    from pipeline.models import MediaInfo
+    from pipeline.models import MediaInfo, PipelineResult
 
     captured = {}
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
@@ -218,6 +218,17 @@ def test_create_job_normalizes_and_forwards_target_language(client, monkeypatch,
         "start",
         lambda **kwargs: captured.update(kwargs) or SimpleNamespace(id="english-job"),
     )
+    pipeline_call = {}
+    monkeypatch.setattr(
+        "backend.routes.jobs.run_pipeline",
+        lambda backend, video, workdir, options, progress, media, should_cancel: (
+            pipeline_call.update(options=options, media=media)
+            or PipelineResult(
+                video_path=str(workdir / "output_en.mp4"),
+                srt_path=str(workdir / "output_en.srt"),
+            )
+        ),
+    )
 
     response = client.post(
         "/api/jobs",
@@ -226,7 +237,13 @@ def test_create_job_normalizes_and_forwards_target_language(client, monkeypatch,
     )
 
     assert response.status_code == 200
-    assert captured["options"].target_language == "en-US"
+    assert captured["job_type"] == "video_dubbing"
+    assert captured["target_language"] == "en-US"
+    assert captured["input_label"] == "a.mp4"
+
+    result = captured["runner"](None, lambda *args: None, lambda: False)
+    assert pipeline_call["options"].target_language == "en-US"
+    assert [artifact.filename for artifact in result.artifacts] == ["a_en.mp4", "a_en.srt"]
 
 
 def test_create_job_rejects_a_voice_that_cannot_speak_the_target_language(
@@ -269,12 +286,43 @@ def test_download_is_refused_until_the_job_finishes(client, tmp_path):
     assert client.get("/api/jobs/abc/download/video").status_code == 409
 
 
+def test_generic_artifact_download_serves_declared_audio(client, tmp_path):
+    audio = tmp_path / "output.wav"
+    audio.write_bytes(b"RIFFfake")
+    _put(Job(
+        id="speech",
+        filename="Hello",
+        input_label="Hello",
+        workdir=tmp_path,
+        voice_id="Ava",
+        job_type="text_to_voice",
+        target_language="en-US",
+        status="done",
+        artifacts=[
+            JobArtifact("wav", "wav", "hello.wav", "audio/wav", str(audio))
+        ],
+    ))
+
+    response = client.get("/api/jobs/speech/artifacts/wav")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert "hello.wav" in response.headers["content-disposition"]
+    assert client.get("/api/jobs/speech/artifacts/mp3").status_code == 404
+
+
 def test_download_serves_the_result_with_a_vietnamese_suffix(client, tmp_path):
     video = tmp_path / "output.mp4"
     video.write_bytes(b"fake")
     _put(Job(
         id="abc", filename="phim.mkv", workdir=tmp_path, voice_id="Kore",
-        status="done", video_path=str(video), srt_path=str(video),
+        status="done",
+        artifacts=[
+            JobArtifact("video", "video", "phim_vi.mp4", "video/mp4", str(video)),
+            JobArtifact(
+                "subtitle", "subtitle", "phim_vi.srt", "application/x-subrip", str(video)
+            ),
+        ],
     ))
     response = client.get("/api/jobs/abc/download/video")
     assert response.status_code == 200
@@ -288,7 +336,14 @@ def test_download_serves_english_results_with_an_english_suffix(client, tmp_path
     subtitles.write_text("", encoding="utf-8")
     _put(Job(
         id="english", filename="movie.mkv", workdir=tmp_path, voice_id="Ava",
-        status="done", video_path=str(video), srt_path=str(subtitles),
+        target_language="en-US", status="done",
+        artifacts=[
+            JobArtifact("video", "video", "movie_en.mp4", "video/mp4", str(video)),
+            JobArtifact(
+                "subtitle", "subtitle", "movie_en.srt", "application/x-subrip",
+                str(subtitles),
+            ),
+        ],
     ))
 
     video_response = client.get("/api/jobs/english/download/video")
@@ -302,7 +357,8 @@ def test_download_serves_english_results_with_an_english_suffix(client, tmp_path
 
 def _done_job(tmp_path, *, attempted, spoken, warnings=()):
     job = Job(id="q", filename="a.mp4", workdir=tmp_path, voice_id="Kore", status="done",
-              attempted_count=attempted, spoken_count=spoken, warnings=list(warnings))
+              attempted_count=attempted, spoken_count=spoken, warnings=list(warnings),
+              degraded=attempted > 0 and spoken < attempted)
     manager._jobs[job.id] = job
     return job
 
@@ -321,9 +377,9 @@ def test_mostly_silent_result_is_flagged_degraded(client, tmp_path):
     assert client.get("/api/jobs/q").json()["degraded"] is True
 
 
-def test_a_few_missing_lines_is_not_degraded(client, tmp_path):
+def test_any_partial_result_is_flagged_degraded(client, tmp_path):
     _done_job(tmp_path, attempted=100, spoken=95)
-    assert client.get("/api/jobs/q").json()["degraded"] is False
+    assert client.get("/api/jobs/q").json()["degraded"] is True
 
 
 def test_a_clean_run_is_never_degraded(client, tmp_path):
@@ -339,8 +395,10 @@ def test_silent_ratio_is_zero_when_nothing_was_attempted(client, tmp_path):
 
 
 def test_a_running_job_is_never_degraded(client, tmp_path):
-    job = _done_job(tmp_path, attempted=100, spoken=0)
-    job.status = "running"
+    job = Job(
+        id="q", filename="a.mp4", workdir=tmp_path, voice_id="Kore",
+        status="running", attempted_count=100, spoken_count=0,
+    )
     manager._jobs[job.id] = job
     assert client.get("/api/jobs/q").json()["degraded"] is False
 

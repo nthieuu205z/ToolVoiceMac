@@ -10,20 +10,38 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from backend import job_manager as jm
+from backend.job_contracts import JobArtifact, JobRunResult
 from backend.job_manager import Job, JobManager
 from pipeline.errors import JobCancelledError
-from pipeline.models import MediaInfo, PipelineResult
-from pipeline.runner import PipelineOptions
-
-MEDIA = MediaInfo(duration=10.0, video_codec="h264", has_audio=True)
-OPTIONS = PipelineOptions(voice_id="Kore")
 
 
 def _run_one(manager: JobManager, workdir: Path) -> Job:
-    job = manager.start(filename="a.mp4", workdir=workdir, voice_id="Kore",
-                        video_path=Path("a.mp4"), media=MEDIA,
-                        backend_factory=lambda: None, options=OPTIONS)
+    def runner(backend, progress, should_cancel):
+        return JobRunResult(
+            artifacts=[
+                JobArtifact(
+                    "video", "video", "a_vi.mp4", "video/mp4",
+                    str(workdir / "output.mp4"),
+                ),
+                JobArtifact(
+                    "subtitle", "subtitle", "a_vi.srt", "application/x-subrip",
+                    str(workdir / "output.srt"),
+                ),
+            ],
+            attempted_count=3,
+            spoken_count=3,
+        )
+
+    job = manager.start(
+        filename="a.mp4",
+        input_label="a.mp4",
+        job_type="video_dubbing",
+        target_language="vi-VN",
+        workdir=workdir,
+        voice_id="Kore",
+        backend_factory=lambda: None,
+        runner=runner,
+    )
     manager._futures[job.id].result(timeout=10)
     return job
 
@@ -37,11 +55,7 @@ def _write_meta(jobs_dir: Path, job_id: str, status: str, **extra) -> Path:
     return workdir
 
 
-def test_a_finished_job_survives_a_server_restart(tmp_path, monkeypatch):
-    monkeypatch.setattr(jm, "run_pipeline", lambda *a, **k: PipelineResult(
-        video_path=str(tmp_path / "output.mp4"), srt_path=str(tmp_path / "output.srt"),
-        attempted_count=3, spoken_count=3,
-    ))
+def test_a_finished_job_survives_a_server_restart(tmp_path):
     workdir = tmp_path / "job1"
     workdir.mkdir()
     done = _run_one(JobManager(max_workers=1), workdir)
@@ -50,9 +64,19 @@ def test_a_finished_job_survives_a_server_restart(tmp_path, monkeypatch):
     assert reborn.restore(tmp_path) == 1
 
     restored = reborn.get(done.id)
+    assert restored is not None
     assert restored.status == "done"
-    assert restored.video_path == str(tmp_path / "output.mp4")
+    assert restored.video_path == str(workdir / "output.mp4")
     assert restored.spoken_count == 3
+
+    saved = json.loads((workdir / "job.json").read_text(encoding="utf-8"))
+    assert saved["job_type"] == "video_dubbing"
+    assert saved["target_language"] == "vi-VN"
+    assert saved["input_label"] == "a.mp4"
+    assert saved["degraded"] is False
+    assert [item["path"] for item in saved["artifacts"]] == [
+        "output.mp4", "output.srt"
+    ]
 
 
 def test_a_job_that_died_mid_run_is_marked_as_error(tmp_path):

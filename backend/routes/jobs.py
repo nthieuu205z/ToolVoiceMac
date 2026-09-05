@@ -12,12 +12,14 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.config import settings
+from backend.job_contracts import JobArtifact, JobRunResult
 from backend.job_manager import Job, manager
 from pipeline.backends import CompositeBackend, build_backend
 from pipeline.errors import UnsupportedMediaError
 from pipeline.languages import normalize_language_code
+from pipeline.models import PipelineResult
 from pipeline.probe import probe_video
-from pipeline.runner import PipelineOptions
+from pipeline.runner import PipelineOptions, run_pipeline
 from pipeline.voices import is_available, route_provider
 
 router = APIRouter()
@@ -32,6 +34,34 @@ _KEEP_JOB_DIRS = 10
 def _make_backend(tts_provider: str) -> CompositeBackend:
     """Engine giọng đọc CHỈ ĐỊNH cho job — provider đã được định tuyến theo giọng đã chọn."""
     return build_backend(settings.provider_config_for(tts_provider))
+
+
+def _video_job_result(
+    result: PipelineResult, filename: str, language: str
+) -> JobRunResult:
+    suffix = "vi" if language == "vi-VN" else "en"
+    stem = Path(filename).stem
+    return JobRunResult(
+        artifacts=[
+            JobArtifact(
+                "video",
+                "video",
+                f"{stem}_{suffix}{Path(result.video_path).suffix}",
+                "video/mp4",
+                result.video_path,
+            ),
+            JobArtifact(
+                "subtitle",
+                "subtitle",
+                f"{stem}_{suffix}.srt",
+                "application/x-subrip",
+                result.srt_path,
+            ),
+        ],
+        warnings=result.warnings,
+        attempted_count=result.attempted_count,
+        spoken_count=result.spoken_count,
+    )
 
 
 @router.post("/api/jobs")
@@ -93,14 +123,29 @@ async def create_job(
         # (mỗi lần là một single-synth, không gộp lô).
         resynthesize_holes=effective_tts != "omnivoice",
     )
+    filename = video.filename or video_path.name
+
+    def runner(backend, progress, should_cancel) -> JobRunResult:
+        result = run_pipeline(
+            backend,
+            video_path,
+            workdir,
+            options,
+            progress,
+            media,
+            should_cancel,
+        )
+        return _video_job_result(result, filename, language)
+
     job = manager.start(
-        filename=video.filename or video_path.name,
+        filename=filename,
+        input_label=filename,
+        job_type="video_dubbing",
+        target_language=language,
         workdir=workdir,
         voice_id=voice_id,
-        video_path=video_path,
-        media=media,
         backend_factory=lambda: _make_backend(effective_tts),
-        options=options,
+        runner=runner,
     )
     return {"job_id": job.id}
 
@@ -206,24 +251,26 @@ async def job_events(job_id: str) -> StreamingResponse:
 
 @router.get("/api/jobs/{job_id}/download/video")
 def download_video(job_id: str) -> FileResponse:
-    job = _require_done(job_id)
-    path = _job_file(job, job.video_path)
-    stem = Path(job.filename).stem
-    return _serve(path, f"{stem}{_compatibility_suffix(path)}{path.suffix}")
+    return _download_artifact(job_id, "video")
 
 
 @router.get("/api/jobs/{job_id}/download/srt")
 def download_srt(job_id: str) -> FileResponse:
+    return _download_artifact(job_id, "subtitle")
+
+
+@router.get("/api/jobs/{job_id}/artifacts/{artifact_id}")
+def download_artifact(job_id: str, artifact_id: str) -> FileResponse:
+    return _download_artifact(job_id, artifact_id)
+
+
+def _download_artifact(job_id: str, artifact_id: str) -> FileResponse:
     job = _require_done(job_id)
-    path = _job_file(job, job.srt_path)
-    return _serve(
-        path,
-        f"{Path(job.filename).stem}{_compatibility_suffix(path)}.srt",
-    )
-
-
-def _compatibility_suffix(path: Path) -> str:
-    return "_en" if path.stem.endswith("_en") else "_vi"
+    artifact = next((item for item in job.artifacts if item.id == artifact_id), None)
+    if artifact is None:
+        raise HTTPException(404, "Không tìm thấy file kết quả.")
+    path = _job_file(job, artifact.path)
+    return _serve(path, artifact.filename, artifact.media_type)
 
 
 def _job_file(job: Job, value: str) -> Path:
@@ -234,17 +281,17 @@ def _job_file(job: Job, value: str) -> Path:
         path = raw.resolve(strict=True)
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(404, "Không tìm thấy file kết quả.") from None
-    if raw.is_symlink() or path != root and root not in path.parents:
+    if ".." in raw.parts or raw.is_symlink() or path != root and root not in path.parents:
         raise HTTPException(404, "Không tìm thấy file kết quả.")
     if path.parent != root:
         raise HTTPException(404, "Không tìm thấy file kết quả.")
     return path
 
 
-def _serve(path: Path, download_name: str) -> FileResponse:
+def _serve(path: Path, download_name: str, media_type: str | None = None) -> FileResponse:
     if not path.is_file():
         raise HTTPException(404, "Không tìm thấy file kết quả.")
-    return FileResponse(path, filename=download_name)
+    return FileResponse(path, filename=download_name, media_type=media_type)
 
 
 def _require(job_id: str) -> Job:
