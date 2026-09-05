@@ -54,6 +54,47 @@ def test_metering_is_off_by_default():
     assert PipelineOptions(voice_id="v").tts_is_metered is False
 
 
+def test_runner_skips_translation_when_source_matches_target(stub_stages, monkeypatch):
+    calls = []
+    monkeypatch.setattr(runner, "translate_segments", lambda *a, **k: calls.append(k))
+
+    run_pipeline(
+        None,
+        stub_stages / "in.mp4",
+        stub_stages,
+        PipelineOptions(voice_id="v", target_language="en-US"),
+        media=MEDIA,
+    )
+
+    assert calls == []
+
+
+def test_runner_passes_target_language_to_synthesis(stub_stages, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        runner,
+        "synthesize_segments",
+        lambda *a, **k: seen.append(k["language"]) or ([], []),
+    )
+
+    _run(stub_stages, PipelineOptions(voice_id="v", target_language="vi-VN"))
+
+    assert seen == ["vi-VN"]
+
+
+def test_english_runner_uses_target_aware_output_names(stub_stages):
+    result = run_pipeline(
+        None,
+        stub_stages / "in.mp4",
+        stub_stages,
+        PipelineOptions(voice_id="v", target_language="en-US"),
+        media=MEDIA,
+    )
+
+    assert result.video_path.endswith("output_en.mp4")
+    assert result.srt_path.endswith("output_en.srt")
+
+
 # ─── đọc lại lượt xấu: chỉ engine CÓ khuyết tật lỗ hổng im lặng mới cần ───
 
 def _capture_resynthesize(monkeypatch) -> dict:

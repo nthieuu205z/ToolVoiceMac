@@ -200,6 +200,60 @@ def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_p
     assert "busy" in ids and len(ids) == 2
 
 
+def test_create_job_normalizes_and_forwards_target_language(client, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from pipeline.models import MediaInfo
+
+    captured = {}
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+    monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
+    monkeypatch.setattr(
+        "backend.routes.jobs.probe_video",
+        lambda path: MediaInfo(duration=1.0, video_codec="h264", has_audio=True),
+    )
+    monkeypatch.setattr(
+        manager,
+        "start",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(id="english-job"),
+    )
+
+    response = client.post(
+        "/api/jobs",
+        files={"video": ("a.mp4", b"data", "video/mp4")},
+        data={"voice_id": "en-US-AvaMultilingualNeural", "target_language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert captured["options"].target_language == "en-US"
+
+
+def test_create_job_rejects_a_voice_that_cannot_speak_the_target_language(
+    client, monkeypatch, tmp_path
+):
+    from pipeline.models import MediaInfo
+
+    starts = []
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+    monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
+    monkeypatch.setattr(
+        "backend.routes.jobs.probe_video",
+        lambda path: MediaInfo(duration=1.0, video_codec="h264", has_audio=True),
+    )
+    monkeypatch.setattr(manager, "start", lambda **kwargs: starts.append(kwargs))
+
+    response = client.post(
+        "/api/jobs",
+        files={"video": ("a.mp4", b"data", "video/mp4")},
+        data={"voice_id": "vi-VN-HoaiMyNeural", "target_language": "en-US"},
+    )
+
+    assert response.status_code == 400
+    assert starts == []
+
+
 def test_the_job_list_is_newest_first(client, tmp_path):
     _put(Job(id="old", filename="a.mp4", workdir=tmp_path, voice_id="v",
              status="done", created_at=100.0))
@@ -225,6 +279,23 @@ def test_download_serves_the_result_with_a_vietnamese_suffix(client, tmp_path):
     response = client.get("/api/jobs/abc/download/video")
     assert response.status_code == 200
     assert "phim_vi.mp4" in response.headers["content-disposition"]
+
+
+def test_download_serves_english_results_with_an_english_suffix(client, tmp_path):
+    video = tmp_path / "output_en.mp4"
+    subtitles = tmp_path / "output_en.srt"
+    video.write_bytes(b"fake")
+    subtitles.write_text("", encoding="utf-8")
+    _put(Job(
+        id="english", filename="movie.mkv", workdir=tmp_path, voice_id="Ava",
+        status="done", video_path=str(video), srt_path=str(subtitles),
+    ))
+
+    video_response = client.get("/api/jobs/english/download/video")
+    srt_response = client.get("/api/jobs/english/download/srt")
+
+    assert "movie_en.mp4" in video_response.headers["content-disposition"]
+    assert "movie_en.srt" in srt_response.headers["content-disposition"]
 
 
 # ─── số liệu chất lượng mà giao diện dựa vào để cảnh báo ───

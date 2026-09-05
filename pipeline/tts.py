@@ -1,4 +1,4 @@
-"""Bước tạo giọng đọc: mỗi lượt phát ngôn tiếng Việt → một đoạn PCM vừa khung thời gian gốc."""
+"""Bước tạo giọng đọc: mỗi lượt phát ngôn đích → một đoạn PCM vừa khung thời gian gốc."""
 
 from __future__ import annotations
 
@@ -71,6 +71,7 @@ def synthesize_segments(
     segments: list[Segment],
     voice_id: str,
     *,
+    language: str = "vi-VN",
     workers: int = 4,
     max_speedup: float = 1.5,
     total_duration: float | None = None,
@@ -86,7 +87,7 @@ def synthesize_segments(
 
     Trả về ([(lượt phát ngôn, mẫu âm thanh)], cảnh báo).
 
-    Tiếng Việt dài hơn khung gốc thì trước hết cho MƯỢN khoảng lặng phía sau (tới tận
+    Lời đích dài hơn khung gốc thì trước hết cho MƯỢN khoảng lặng phía sau (tới tận
     mốc câu kế tiếp) — đọc tốc độ tự nhiên tràn vào chỗ im lặng nghe thật hơn hẳn
     giọng bị tăng tốc. Chỉ khi hết cả chỗ mượn mới tăng tốc, tối đa `max_speedup`.
 
@@ -97,7 +98,7 @@ def synthesize_segments(
     được xử lý theo cụm gối đầu — để lượt cuối cụm không mượn lố sang cụm sau.
     `progress_base`/`progress_total`: quy số đếm về toàn video thay vì cụm hiện tại.
     """
-    todo = [(i, seg) for i, seg in enumerate(segments) if seg.text_vi.strip()]
+    todo = [(i, seg) for i, seg in enumerate(segments) if seg.target_text.strip()]
     if not todo:
         return [], ["Không có lời thoại nào để đọc."]
 
@@ -117,7 +118,7 @@ def synthesize_segments(
         batch_size = 1
     if batch_size > 0 and hasattr(backend, "synthesize_batch"):
         return _synthesize_theo_lo(
-            backend, segments, todo, voice_id, max_speedup=max_speedup,
+            backend, segments, todo, voice_id, language=language, max_speedup=max_speedup,
             total_duration=total_duration, next_utterance_start=next_utterance_start,
             resynthesize_bad=resynthesize_bad, fill_slowdown=fill_slowdown,
             progress=progress, should_cancel=should_cancel,
@@ -131,7 +132,7 @@ def synthesize_segments(
             pool.submit(_render_one, backend, seg, voice_id, max_speedup,
                         _allowed_window(segments, i, total_duration,
                                         next_utterance_start), resynthesize_bad,
-                        fill_slowdown): (i, seg)
+                        fill_slowdown, language): (i, seg)
             for i, seg in todo
         }
         for done, future in enumerate(as_completed(futures), start=1):
@@ -204,12 +205,12 @@ def _fit_one(seg: Segment, pcm: bytes, max_speedup: float,
     samples = pcm_to_array(pcm)
 
     sane = max(
-        len(seg.text_vi) / _RUNAWAY_CHARS_PER_SECOND + _RUNAWAY_HEADROOM_SECONDS,
+        len(seg.target_text) / _RUNAWAY_CHARS_PER_SECOND + _RUNAWAY_HEADROOM_SECONDS,
         _RUNAWAY_MIN_SECONDS,
     )
     if duration_of(samples) > sane:
         log.warning("TTS chạy hoang: %.1fs audio cho %d ký tự (%.40r) — cắt về %.1fs",
-                    duration_of(samples), len(seg.text_vi), seg.text_vi, sane)
+                    duration_of(samples), len(seg.target_text), seg.target_text, sane)
         samples = truncate_with_fade(samples, sane)
 
     return fit_to_window(samples, seg.duration, allowed_duration, max_speedup,
@@ -219,15 +220,19 @@ def _fit_one(seg: Segment, pcm: bytes, max_speedup: float,
 def _render_one(
     backend: SpeechSynthesizer, seg: Segment, voice_id: str, max_speedup: float,
     allowed_duration: float, resynthesize_bad: bool = False, fill_slowdown: float = 1.0,
+    language: str = "vi-VN",
 ) -> tuple[np.ndarray, float]:
     """Gọi TTS một lần cho câu bình thường — tenacity bên trong GeminiRunner lo việc thử
     lại khi LỖI. Chỉ khi bật `resynthesize_bad` (backend local, miễn phí) và phát hiện
     lỗ hổng im lặng bất thường mới đọc lại vì CHẤT LƯỢNG — không phải gọi lại mù.
     """
     if resynthesize_bad:
-        pcm = _draw_without_hole(lambda t: backend.synthesize(t, voice_id), seg.text_vi)
+        pcm = _draw_without_hole(
+            lambda text: backend.synthesize(text, voice_id, language=language),
+            seg.target_text,
+        )
     else:
-        pcm = backend.synthesize(seg.text_vi, voice_id)
+        pcm = backend.synthesize(seg.target_text, voice_id, language=language)
     return _fit_one(seg, pcm, max_speedup, allowed_duration, fill_slowdown)
 
 
@@ -236,22 +241,27 @@ def _synthesize_single_fallback(
     seg: Segment,
     voice_id: str,
     *,
+    language: str = "vi-VN",
     resynthesize_bad: bool = False,
     prefer_batch: bool = False,
 ) -> list[bytes]:
     """Synthesize one segment and keep failures local to that segment."""
     try:
         if prefer_batch and hasattr(backend, "synthesize_batch"):
-            pcms = backend.synthesize_batch([seg.text_vi], voice_id)
+            pcms = backend.synthesize_batch(
+                [seg.target_text], voice_id, language=language
+            )
             if len(pcms) != 1:
                 raise RuntimeError("provider không trả đúng một audio cho lô đơn")
             return pcms
         if resynthesize_bad:
             return [_draw_without_hole(
-                lambda text: backend.synthesize(text, voice_id),
-                seg.text_vi,
+                lambda text: backend.synthesize(
+                    text, voice_id, language=language
+                ),
+                seg.target_text,
             )]
-        return [backend.synthesize(seg.text_vi, voice_id)]
+        return [backend.synthesize(seg.target_text, voice_id, language=language)]
     except Exception as exc:
         log.warning("Không đọc được lượt thoại: %s", exc)
         return [b""]
@@ -287,7 +297,7 @@ def _lo_theo_do_dai(todo: list[tuple[int, Segment]], tran: int) -> list[list[int
     """
     if not todo:
         return []
-    lens = [max(1, len(seg.text_vi)) for _, seg in todo]
+    lens = [max(1, len(seg.target_text)) for _, seg in todo]
     order = sorted(range(len(todo)), key=lambda k: lens[k], reverse=True)
     batches: list[list[int]] = []
     i = 0
@@ -299,7 +309,7 @@ def _lo_theo_do_dai(todo: list[tuple[int, Segment]], tran: int) -> list[list[int
 
 def _synthesize_theo_lo(
     backend: SpeechSynthesizer, segments: list[Segment], todo: list[tuple[int, Segment]],
-    voice_id: str, *, max_speedup: float, total_duration: float | None,
+    voice_id: str, *, language: str, max_speedup: float, total_duration: float | None,
     next_utterance_start: float | None, resynthesize_bad: bool, fill_slowdown: float,
     progress: ProgressFn, should_cancel: CancelFn,
     progress_base: int, grand_total: int,
@@ -332,12 +342,17 @@ def _synthesize_theo_lo(
                 backend,
                 lo[0][1],
                 voice_id,
+                language=language,
                 resynthesize_bad=resynthesize_bad,
                 prefer_batch=getattr(backend, "mps_batch_safe", True) is False,
             )
         else:
             try:
-                pcms = backend.synthesize_batch([seg.text_vi for _, seg in lo], voice_id)
+                pcms = backend.synthesize_batch(
+                    [seg.target_text for _, seg in lo],
+                    voice_id,
+                    language=language,
+                )
                 if len(pcms) != len(lo):
                     raise RuntimeError(
                         f"provider trả {len(pcms)} audio cho {len(lo)} câu trong lô"
@@ -352,7 +367,11 @@ def _synthesize_theo_lo(
                 pcms = []
                 for _, seg in lo:
                     pcms.extend(_synthesize_single_fallback(
-                        backend, seg, voice_id, resynthesize_bad=resynthesize_bad
+                        backend,
+                        seg,
+                        voice_id,
+                        language=language,
+                        resynthesize_bad=resynthesize_bad,
                     ))
 
         for (index, seg), pcm in zip(lo, pcms):
@@ -362,7 +381,12 @@ def _synthesize_theo_lo(
                 continue
             # Lượt xấu (lỗ hổng im lặng bất thường) hiếm — đọc lại RIÊNG câu đó, không đọc lại cả lô.
             if resynthesize_bad and longest_internal_silence(pcm_to_array(pcm)) > _MAX_INTERNAL_SILENCE:
-                pcm = _draw_without_hole(lambda t: backend.synthesize(t, voice_id), seg.text_vi)
+                pcm = _draw_without_hole(
+                    lambda text: backend.synthesize(
+                        text, voice_id, language=language
+                    ),
+                    seg.target_text,
+                )
             raw[index] = pcm
 
         progress(

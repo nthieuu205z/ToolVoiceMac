@@ -45,13 +45,22 @@ class Segment:
     start: float
     end: float
     text: str
-    text_vi: str = ""
+    target_text: str = ""
     # Thời lượng giọng đọc thật sau khi tạo, thường ngắn hơn khung gốc.
     # Phụ đề bám theo con số này để không trôi ra khỏi tiếng nói.
     spoken_duration: float = 0.0
     # Mốc phát THẬT sau bước xếp chỗ (plan_placement): thường bằng `start`, nhưng bị
     # đẩy lùi khi lượt trước tràn khung — phụ đề phải bám theo đây, không theo `start`.
     placed_start: float | None = None
+
+    @property
+    def text_vi(self) -> str:
+        """Tên tương thích trong thời gian chuyển sang nội dung đích trung lập."""
+        return self.target_text
+
+    @text_vi.setter
+    def text_vi(self, value: str) -> None:
+        self.target_text = value
 
     @property
     def duration(self) -> float:
@@ -120,7 +129,7 @@ class Translator(Protocol):
         *,
         target_language: str = "vi-VN",
     ) -> list[str]:
-        """Dịch sang tiếng Việt, trả về đúng số phần tử và đúng thứ tự như đầu vào."""
+        """Dịch sang ngôn ngữ đích, trả về đúng số phần tử và đúng thứ tự như đầu vào."""
         ...
 
 

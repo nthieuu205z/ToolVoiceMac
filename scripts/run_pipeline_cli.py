@@ -18,6 +18,7 @@ from pipeline import custom_voices  # noqa: E402
 from pipeline.backends import build_backend  # noqa: E402
 from pipeline.errors import PipelineError  # noqa: E402
 from pipeline.ffmpeg_utils import set_binaries  # noqa: E402
+from pipeline.languages import available_languages  # noqa: E402
 from pipeline.models import overall_percent  # noqa: E402
 from pipeline.runner import PipelineOptions, run_pipeline  # noqa: E402
 from pipeline.voices import available_voices, default_voice  # noqa: E402
@@ -32,8 +33,13 @@ def main() -> int:
         print(f"Cấu hình không hợp lệ: {exc}", file=sys.stderr)
         return 1
     voices = available_voices(settings.tts_provider, settings.resolved_clone_provider)
-    parser = argparse.ArgumentParser(description="Lồng tiếng Việt cho một video")
+    parser = argparse.ArgumentParser(description="Lồng tiếng cho một video")
     parser.add_argument("video", type=Path)
+    parser.add_argument(
+        "--target-language",
+        choices=[language.code for language in available_languages()],
+        default="vi-VN",
+    )
     parser.add_argument("--voice", default=default_voice(settings.tts_provider),
                         choices=[v.id for v in voices])
     parser.add_argument("--outdir", type=Path, default=Path("jobs/cli"))
@@ -61,6 +67,7 @@ def main() -> int:
     backend = build_backend(settings.provider_config_for(effective_tts))
     options = PipelineOptions(
         voice_id=args.voice,
+        target_language=args.target_language,
         max_utterance_seconds=settings.max_utterance_seconds,
         max_utterance_gap=settings.max_utterance_gap,
         stt_workers=settings.stt_workers,

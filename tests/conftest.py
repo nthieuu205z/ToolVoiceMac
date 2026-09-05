@@ -75,14 +75,23 @@ class FakeGemini:
             return self.language, ""
         return self.language, self.clips[min(index, len(self.clips) - 1)]
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
         self.translate_calls.append((texts, durations, context))
         if self.translations:
             index = min(len(self.translate_calls) - 1, len(self.translations) - 1)
             return self.translations[index]
         return [f"[vi] {t}" for t in texts]
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
         prior = self.synthesize_calls.count((text, voice_id))
         self.synthesize_calls.append((text, voice_id))
         if self.tts_error is not None:

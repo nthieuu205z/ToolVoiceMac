@@ -76,7 +76,7 @@ def _backend(synth):
 
 
 def _segs():
-    return [Segment(start=i * 3.0, end=i * 3.0 + 2.0, text="x", text_vi=c)
+    return [Segment(start=i * 3.0, end=i * 3.0 + 2.0, text="x", target_text=c)
             for i, c in enumerate(["a", "b", "c"])]
 
 

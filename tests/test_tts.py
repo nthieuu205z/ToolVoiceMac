@@ -37,6 +37,30 @@ def test_each_segment_is_synthesized_with_the_chosen_voice():
     assert warnings == []
 
 
+def test_each_segment_is_synthesized_in_the_target_language():
+    class RecordingBackend:
+        batch_size = 0
+
+        def __init__(self):
+            self.languages = []
+
+        def synthesize(self, text, voice_id, *, language="vi-VN"):
+            self.languages.append(language)
+            return sine_pcm(0.5)
+
+    backend = RecordingBackend()
+
+    synthesize_segments(
+        backend,
+        segments((0.0, 2.0, "Hello")),
+        "Ava",
+        language="en-US",
+        workers=1,
+    )
+
+    assert backend.languages == ["en-US"]
+
+
 def test_untranslated_segments_are_skipped():
     backend = FakeGemini(tts_duration=0.5)
     fitted, _ = synthesize_segments(

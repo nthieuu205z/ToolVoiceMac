@@ -95,9 +95,9 @@ def segment_to_cues(seg: Segment) -> list[tuple[float, float, str]]:
     """Chia thời lượng của lượt phát ngôn cho các cue theo tỉ lệ số ký tự.
 
     Trải theo `cue_span` (thời lượng giọng đọc thật) chứ không theo khung gốc: giọng
-    Việt thường đọc xong sớm hơn, trải theo khung sẽ đẩy các cue cuối vào chỗ im lặng.
+    đích có thể đọc xong sớm hơn, trải theo khung sẽ đẩy các cue cuối vào chỗ im lặng.
     """
-    text = (seg.text_vi or seg.text).strip()
+    text = (seg.target_text or seg.text).strip()
     cues = split_into_cues(text)
     if not cues:
         return []

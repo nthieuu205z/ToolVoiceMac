@@ -112,7 +112,7 @@ class _ClipTranscript(BaseModel):
 
 class _TranslatedLine(BaseModel):
     index: int
-    text_vi: str
+    text: str
 
 
 class _Translation(BaseModel):
@@ -130,14 +130,14 @@ Chép nguyên văn lời thoại trong đoạn audio này.
 
 _TRANSLATE_PROMPT = """\
 Bạn là biên dịch viên lồng tiếng phim chuyên nghiệp. Hãy dịch từng dòng thoại sang
-TIẾNG VIỆT tự nhiên như người Việt nói chuyện.
+{target_display_name} ({target_name}) tự nhiên như người bản ngữ nói chuyện.
 
 Quy tắc bắt buộc:
 - Trả về ĐÚNG {count} dòng, giữ nguyên `index` của từng dòng đầu vào.
 - Dịch ĐẦY ĐỦ mọi ý của câu gốc. TUYỆT ĐỐI không lược bỏ thông tin, không tóm tắt,
   không gộp ý — thiếu ý là lỗi nặng hơn dài dòng.
-- `duration_seconds` là khung thời gian của câu gốc (giọng đọc chạy khoảng 16 ký tự
-  mỗi giây, `max_chars` là mức vừa khung). Hãy CHỌN CÁCH DIỄN ĐẠT gọn và khẩu ngữ
+- `duration_seconds` là khung thời gian của câu gốc; `max_chars` là mức vừa khung
+  theo tốc độ nói của ngôn ngữ đích. Hãy CHỌN CÁCH DIỄN ĐẠT gọn và khẩu ngữ
   tự nhiên để đọc kịp; nhưng khi phải chọn giữa đủ ý và ngắn, luôn chọn đủ ý.
 - Giữ nhất quán tên riêng, xưng hô và thuật ngữ xuyên suốt toàn bộ video.
 - Chỉ trả về lời thoại đã dịch, không chú thích, không dấu ngoặc mô tả.
@@ -146,8 +146,32 @@ Các dòng cần dịch (JSON):
 {payload}
 """
 
-# Đo thực nghiệm: 560 ký tự tiếng Việt → 33.7 giây giọng đọc.
-CHARS_PER_SECOND = 16.6
+# Tốc độ nói đo/ước lượng cho ngân sách độ dài từng ngôn ngữ đích.
+_SPEAKING_RATES = {"vi-VN": 16.6, "en-US": 14.0}
+
+
+def _format_context(context: str) -> str:
+    if not context:
+        return ""
+    return f"\nNgữ cảnh các dòng ngay trước đó (ngôn ngữ nguồn):\n{context}\n"
+
+
+def _translation_payload(
+    texts: list[str], durations: list[float], target_language: str
+) -> str:
+    chars_per_second = _SPEAKING_RATES[target_language]
+    return json.dumps(
+        [
+            {
+                "index": index,
+                "duration_seconds": round(duration, 1),
+                "max_chars": max(20, int(duration * chars_per_second)),
+                "text": text,
+            }
+            for index, (text, duration) in enumerate(zip(texts, durations))
+        ],
+        ensure_ascii=False,
+    )
 
 # Không đưa lời thoại trần vào TTS: gặp câu hỏi, model tưởng là câu lệnh và định trả lời
 # ("Model tried to generate text, but it should only be used for TTS"). Đã kiểm chứng
@@ -257,27 +281,16 @@ class GeminiRunner:
         *,
         target_language: str = "vi-VN",
     ) -> list[str]:
-        # Task 2 validates the contract; Task 3 makes the prompt target-neutral.
-        require_language(target_language)
-        payload = json.dumps(
-            [
-                {
-                    "index": i,
-                    "duration_seconds": round(d, 1),
-                    "max_chars": max(20, int(d * CHARS_PER_SECOND)),
-                    "text": t,
-                }
-                for i, (t, d) in enumerate(zip(texts, durations))
-            ],
-            ensure_ascii=False,
-        )
+        language = require_language(target_language)
         prompt = _TRANSLATE_PROMPT.format(
+            target_display_name=language.display_name,
+            target_name=language.english_name,
             count=len(texts),
-            context=f"\nNgữ cảnh các dòng ngay trước đó (đã dịch):\n{context}\n" if context else "",
-            payload=payload,
+            context=_format_context(context),
+            payload=_translation_payload(texts, durations, language.code),
         )
         parsed = self._parse(self._generate_translation(prompt), _Translation)
-        by_index = {line.index: line.text_vi.strip() for line in parsed.lines}
+        by_index = {line.index: line.text.strip() for line in parsed.lines}
         return [by_index.get(i, "") for i in range(len(texts))]
 
     @_retry

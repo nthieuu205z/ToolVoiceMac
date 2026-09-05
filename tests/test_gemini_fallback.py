@@ -306,7 +306,7 @@ class _TranslationResponse:
     def __init__(self):
         from pipeline.gemini import _TranslatedLine, _Translation
 
-        self.parsed = _Translation(lines=[_TranslatedLine(index=0, text_vi="xin chào")])
+        self.parsed = _Translation(lines=[_TranslatedLine(index=0, text="xin chào")])
         self.candidates = []
         self.text = ""
 

@@ -33,6 +33,7 @@ def test_cli_routes_clone_provider_without_legacy_configuration(monkeypatch, tmp
 
     class FakeArgs:
         voice = "clone-demo"
+        target_language = "en-US"
         video = tmp_path / "input.mp4"
         outdir = tmp_path / "out"
         verbose = False
@@ -69,3 +70,4 @@ def test_cli_routes_clone_provider_without_legacy_configuration(monkeypatch, tmp
     assert built == ["omnivoice"]
     assert options[0].tts_is_metered is False
     assert options[0].resynthesize_holes is False
+    assert options[0].target_language == "en-US"

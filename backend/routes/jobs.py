@@ -15,6 +15,7 @@ from backend.config import settings
 from backend.job_manager import Job, manager
 from pipeline.backends import CompositeBackend, build_backend
 from pipeline.errors import UnsupportedMediaError
+from pipeline.languages import normalize_language_code
 from pipeline.probe import probe_video
 from pipeline.runner import PipelineOptions
 from pipeline.voices import is_available, route_provider
@@ -34,13 +35,26 @@ def _make_backend(tts_provider: str) -> CompositeBackend:
 
 
 @router.post("/api/jobs")
-async def create_job(video: UploadFile = File(...), voice_id: str = Form(...)) -> dict:
+async def create_job(
+    video: UploadFile = File(...),
+    voice_id: str = Form(...),
+    target_language: str = Form("vi-VN"),
+) -> dict:
     # Bước dịch luôn cần Gemini, kể cả khi nhận diện và giọng đọc đã chạy miễn phí.
     if not settings.gemini_api_key:
         raise HTTPException(500, "Chưa cấu hình dịch vụ dịch thuật. Hãy điền khóa trong file .env.")
+    try:
+        language = normalize_language_code(target_language)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     clone_provider = settings.resolved_clone_provider
-    if not is_available(voice_id, settings.tts_provider, clone_provider):
-        raise HTTPException(400, f"Giọng đọc không hợp lệ: {voice_id}")
+    if not is_available(
+        voice_id,
+        settings.tts_provider,
+        clone_provider,
+        language=language,
+    ):
+        raise HTTPException(400, "Giọng đọc không hỗ trợ ngôn ngữ đã chọn.")
 
     # Định tuyến một lần theo giọng: giọng nhân bản → OmniVoice; còn lại → tts_provider.
     try:
@@ -64,6 +78,7 @@ async def create_job(video: UploadFile = File(...), voice_id: str = Form(...)) -
 
     options = PipelineOptions(
         voice_id=voice_id,
+        target_language=language,
         max_utterance_seconds=settings.max_utterance_seconds,
         max_utterance_gap=settings.max_utterance_gap,
         sentence_level_timing=settings.sentence_level_timing,
@@ -194,13 +209,21 @@ def download_video(job_id: str) -> FileResponse:
     job = _require_done(job_id)
     path = _job_file(job, job.video_path)
     stem = Path(job.filename).stem
-    return _serve(path, f"{stem}_vi{path.suffix}")
+    return _serve(path, f"{stem}{_compatibility_suffix(path)}{path.suffix}")
 
 
 @router.get("/api/jobs/{job_id}/download/srt")
 def download_srt(job_id: str) -> FileResponse:
     job = _require_done(job_id)
-    return _serve(_job_file(job, job.srt_path), f"{Path(job.filename).stem}_vi.srt")
+    path = _job_file(job, job.srt_path)
+    return _serve(
+        path,
+        f"{Path(job.filename).stem}{_compatibility_suffix(path)}.srt",
+    )
+
+
+def _compatibility_suffix(path: Path) -> str:
+    return "_en" if path.stem.endswith("_en") else "_vi"
 
 
 def _job_file(job: Job, value: str) -> Path:

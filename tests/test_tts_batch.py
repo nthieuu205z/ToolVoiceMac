@@ -11,7 +11,7 @@ from pipeline.tts import _chia_lo, synthesize_segments
 
 
 def segments(*specs: tuple[float, float, str]) -> list[Segment]:
-    return [Segment(start=s, end=e, text="x", text_vi=vi) for s, e, vi in specs]
+    return [Segment(start=s, end=e, text="x", target_text=text) for s, e, text in specs]
 
 
 def pcm(seconds: float = 1.0) -> bytes:
@@ -27,13 +27,13 @@ class LoBackend:
         self.batch_calls: list[list[str]] = []
         self.single_calls: list[str] = []
 
-    def synthesize_batch(self, texts, voice_id):
+    def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
         self.batch_calls.append(list(texts))
         if self.batch_error:
             raise RuntimeError("batch failed")
         return [pcm() for _ in texts]
 
-    def synthesize(self, text, voice_id):
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
         self.single_calls.append(text)
         if text == self.bad_text:
             raise RuntimeError("single failed")
@@ -78,10 +78,33 @@ def test_batch_provider_is_called_once_and_keeps_original_order():
 
     fitted, warnings = synthesize_segments(backend, segs, "voice", total_duration=20.0)
 
-    assert [segment.text_vi for segment, _ in fitted] == ["a", "b", "c"]
+    assert [segment.target_text for segment, _ in fitted] == ["a", "b", "c"]
     assert not warnings
     assert backend.batch_calls == [["a", "b", "c"]]
     assert backend.single_calls == []
+
+
+def test_batch_provider_receives_the_target_language():
+    class RecordingBackend(LoBackend):
+        def __init__(self):
+            super().__init__()
+            self.languages = []
+
+        def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
+            self.languages.append(language)
+            return super().synthesize_batch(texts, voice_id)
+
+    backend = RecordingBackend()
+
+    synthesize_segments(
+        backend,
+        segments((0.0, 2.0, "Hello"), (3.0, 5.0, "world")),
+        "Ava",
+        language="en-US",
+        total_duration=20.0,
+    )
+
+    assert backend.languages == ["en-US"]
 
 
 def test_unsafe_mps_backend_uses_single_item_batches():
@@ -111,7 +134,7 @@ def test_failed_unsafe_mps_batch_does_not_retry_as_a_multi_item_batch():
 
 def test_mismatched_batch_output_falls_back_to_every_item():
     class ShortBackend(LoBackend):
-        def synthesize_batch(self, texts, voice_id):
+        def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
             self.batch_calls.append(list(texts))
             return [pcm()]
 
@@ -132,7 +155,7 @@ def test_failed_batch_falls_back_to_single_items():
     fitted, warnings = synthesize_segments(backend, segs, "voice", total_duration=20.0)
 
     assert backend.single_calls == ["a", "b", "c"]
-    assert [segment.text_vi for segment, _ in fitted] == ["a", "c"]
+    assert [segment.target_text for segment, _ in fitted] == ["a", "c"]
     assert any("1/3" in warning for warning in warnings)
 
 
