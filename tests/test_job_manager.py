@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 
 from backend import job_manager as jm
@@ -56,6 +57,11 @@ class _SpyJob(Job):
         super().__setattr__(name, value)
         if name == "status" and value in ("done", "error"):
             object.__setattr__(self, "captured", self.snapshot())
+
+
+class _BrokenFinalizationJob(Job):
+    def mark_finished(self, status, message, *, now=None):
+        raise NoSpeechDetectedError()
 
 
 def test_result_fields_are_visible_the_moment_status_turns_done(tmp_path, monkeypatch):
@@ -133,6 +139,48 @@ def test_unexpected_crash_still_surfaces_to_the_ui(tmp_path):
 
     assert job.status == "error"
     assert "Lỗi không lường trước" in job.message
+
+
+def test_malformed_result_finishes_as_error_without_partial_publication(tmp_path):
+    artifact = JobArtifact(
+        "video", "video", "a_vi.mp4", "video/mp4", str(tmp_path / "output.mp4")
+    )
+
+    def malformed_runner(backend, progress, should_cancel):
+        return JobRunResult(
+            artifacts=[artifact],
+            warnings=["must not publish"],
+            attempted_count=None,
+            spoken_count=1,
+        )
+
+    manager = JobManager(max_workers=1)
+    job = _wait(manager, _start(manager, tmp_path, malformed_runner))
+
+    assert job.status == "error"
+    assert job.finished_at is not None
+    assert job.artifacts == []
+    assert job.warnings == []
+    assert job.attempted_count == 0
+    assert job.spoken_count == 0
+    assert job.degraded is False
+
+    persisted = json.loads((tmp_path / "job.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == "error"
+    assert persisted["finished_at"] is not None
+    assert persisted["artifacts"] == []
+
+
+def test_finalization_exception_cannot_escape_the_manager_lifecycle(tmp_path, monkeypatch):
+    monkeypatch.setattr(jm, "Job", _BrokenFinalizationJob)
+    manager = JobManager(max_workers=1)
+
+    job = _wait(manager, _start(manager, tmp_path))
+
+    assert job.status == "error"
+    assert job.finished_at is not None
+    assert job.artifacts == []
+    assert job.message == NoSpeechDetectedError.user_message
 
 
 def test_message_is_set_before_status_flips_to_error(tmp_path, monkeypatch):

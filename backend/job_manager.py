@@ -90,8 +90,24 @@ def _restore_artifacts(data: dict, workdir: Path) -> list[JobArtifact]:
     return restored
 
 
-def _legacy_artifacts(data: dict, workdir: Path) -> list[JobArtifact]:
+def _legacy_target_language(data: dict) -> str:
+    explicit = data.get("target_language")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    for key in ("video_path", "srt_path"):
+        value = data.get(key)
+        if isinstance(value, str) and Path(value).stem.endswith("_en"):
+            return "en-US"
+    return "vi-VN"
+
+
+def _legacy_artifacts(
+    data: dict, workdir: Path, target_language: str
+) -> list[JobArtifact]:
     artifacts: list[JobArtifact] = []
+    original_name = str(data.get("filename") or data.get("input_label") or "video")
+    stem = Path(original_name).stem or "video"
+    suffix = "en" if target_language == "en-US" else "vi"
     for artifact_id, kind, media_type, key in (
         ("video", "video", "video/mp4", "video_path"),
         ("subtitle", "subtitle", "application/x-subrip", "srt_path"),
@@ -102,8 +118,13 @@ def _legacy_artifacts(data: dict, workdir: Path) -> list[JobArtifact]:
         path = _direct_child_path(workdir, value, require_relative=False)
         if path is None:
             continue
+        filename = (
+            f"{stem}_{suffix}{path.suffix or '.mp4'}"
+            if artifact_id == "video"
+            else f"{stem}_{suffix}.srt"
+        )
         artifacts.append(
-            JobArtifact(artifact_id, kind, path.name, media_type, str(path))
+            JobArtifact(artifact_id, kind, filename, media_type, str(path))
         )
     return artifacts
 
@@ -369,12 +390,30 @@ class Job:
 
     def publish_result(self, result: JobRunResult) -> None:
         """Set terminal result fields before the terminal status is exposed."""
+        artifacts = list(result.artifacts)
+        if not all(isinstance(artifact, JobArtifact) for artifact in artifacts):
+            raise TypeError("Job result artifacts must be JobArtifact values")
+        warnings = list(result.warnings)
+        if not all(isinstance(warning, str) for warning in warnings):
+            raise TypeError("Job result warnings must be strings")
+        attempted_count = max(0, int(result.attempted_count))
+        spoken_count = max(0, int(result.spoken_count))
+        degraded = attempted_count > 0 and spoken_count < attempted_count
         with self.telemetry_lock:
-            self.artifacts = list(result.artifacts)
-            self.warnings = list(result.warnings)
-            self.attempted_count = max(0, int(result.attempted_count))
-            self.spoken_count = max(0, int(result.spoken_count))
-            self.degraded = result.degraded
+            self.artifacts = artifacts
+            self.warnings = warnings
+            self.attempted_count = attempted_count
+            self.spoken_count = spoken_count
+            self.degraded = degraded
+
+    def clear_result(self) -> None:
+        """Discard unpublished/partial terminal data after finalization fails."""
+        with self.telemetry_lock:
+            self.artifacts = []
+            self.warnings = []
+            self.attempted_count = 0
+            self.spoken_count = 0
+            self.degraded = False
 
 
 class JobManager:
@@ -518,6 +557,21 @@ class JobManager:
             )
         return self._executor
 
+    @staticmethod
+    def _finish_failed_job(
+        job: Job, status: str, message: str, *, clear_result: bool
+    ) -> None:
+        """Always publish a terminal failure, even if telemetry finalization breaks."""
+        with job.telemetry_lock:
+            if clear_result:
+                job.clear_result()
+            job.message = message
+            try:
+                job.mark_finished(status, message)
+            except Exception:
+                job.finished_at = time.time()
+            job.status = status
+
     def _run(self, job: Job, backend_factory, runner, *legacy_args) -> None:
         # Internal compatibility for old direct callers; production dispatch is typed.
         if legacy_args:
@@ -570,6 +624,7 @@ class JobManager:
                 return
             job.update_progress(stage, fraction, message)
 
+        publishing = False
         try:
             log.info("Job %s: bắt đầu pipeline, voice=%s", job.id, job.voice_id)
             backend = backend_factory()
@@ -578,32 +633,31 @@ class JobManager:
             result = runner(backend, progress, job.cancel_event.is_set)
             if not isinstance(result, JobRunResult):
                 raise TypeError("Job runner must return JobRunResult")
-        except JobCancelledError as exc:
-            log.info("Job %s đã dừng theo yêu cầu ở bước %s", job.id, job.stage)
-            with job.telemetry_lock:
-                job.message = exc.user_message
-                job.mark_finished("cancelled", job.message)
-                job.status = "cancelled"
-        except PipelineError as exc:
-            log.warning("Job %s lỗi ở bước %s: %s", job.id, job.stage, exc)
-            with job.telemetry_lock:
-                job.message = exc.user_message
-                job.mark_finished("error", job.message)
-                job.status = "error"
-        except Exception as exc:  # lỗi ngoài dự kiến — vẫn phải hiện được lên UI
-            log.exception("Job %s hỏng bất ngờ", job.id)
-            with job.telemetry_lock:
-                job.message = f"Lỗi không lường trước: {exc}"
-                job.mark_finished("error", job.message)
-                job.status = "error"
-        else:
-            # Publish every terminal field under one lock before exposing "done".
+            publishing = True
             with job.telemetry_lock:
                 job.publish_result(result)
                 final_stage = STAGES_BY_JOB_TYPE[job.job_type][-1]
                 job.update_progress(final_stage, 1.0, "Hoàn tất")
                 job.mark_finished("done", job.message)
                 job.status = "done"
+        except JobCancelledError as exc:
+            log.info("Job %s đã dừng theo yêu cầu ở bước %s", job.id, job.stage)
+            self._finish_failed_job(
+                job, "cancelled", exc.user_message, clear_result=publishing
+            )
+        except PipelineError as exc:
+            log.warning("Job %s lỗi ở bước %s: %s", job.id, job.stage, exc)
+            self._finish_failed_job(
+                job, "error", exc.user_message, clear_result=publishing
+            )
+        except Exception as exc:  # lỗi ngoài dự kiến — vẫn phải hiện được lên UI
+            log.exception("Job %s hỏng bất ngờ", job.id)
+            self._finish_failed_job(
+                job,
+                "error",
+                f"Lỗi không lường trước: {exc}",
+                clear_result=publishing,
+            )
         self._persist(job)
 
     # ─── lưu và khôi phục ───────────────────────────────────────────
@@ -644,16 +698,17 @@ class JobManager:
             try:
                 data = json.loads(meta.read_text(encoding="utf-8"))
                 job_type = str(data.get("job_type", "video_dubbing"))
+                target_language = _legacy_target_language(data)
                 artifacts = _restore_artifacts(data, meta.parent)
                 if not artifacts and "artifacts" not in data:
-                    artifacts = _legacy_artifacts(data, meta.parent)
+                    artifacts = _legacy_artifacts(data, meta.parent, target_language)
                 job = Job(
                     id=data["job_id"],
                     filename=data.get("filename", ""),
                     workdir=meta.parent,
                     voice_id=data.get("voice_id", ""),
                     job_type=job_type,
-                    target_language=str(data.get("target_language", "vi-VN")),
+                    target_language=target_language,
                     input_label=str(data.get("input_label", data.get("filename", ""))),
                     status=data.get("status", "error"),
                     stage=data.get("stage", STAGES_BY_JOB_TYPE.get(job_type, ("extract",))[0]),

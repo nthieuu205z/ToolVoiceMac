@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -351,6 +353,55 @@ def test_download_serves_english_results_with_an_english_suffix(client, tmp_path
 
     assert "movie_en.mp4" in video_response.headers["content-disposition"]
     assert "movie_en.srt" in srt_response.headers["content-disposition"]
+
+
+@pytest.mark.parametrize(
+    ("metadata", "video_name", "srt_name", "expected_language", "suffix"),
+    [
+        ({}, "output.mp4", "output.srt", "vi-VN", "vi"),
+        ({}, "output_en.mp4", "output_en.srt", "en-US", "en"),
+        ({"target_language": "en-US"}, "output.mp4", "output.srt", "en-US", "en"),
+    ],
+)
+def test_legacy_download_aliases_restore_original_filename_and_language_suffix(
+    client,
+    tmp_path,
+    metadata,
+    video_name,
+    srt_name,
+    expected_language,
+    suffix,
+):
+    workdir = tmp_path / f"legacy-{suffix}-{video_name}"
+    workdir.mkdir()
+    (workdir / video_name).write_bytes(b"video")
+    (workdir / srt_name).write_text("", encoding="utf-8")
+    (workdir / "job.json").write_text(
+        json.dumps(
+            {
+                "job_id": workdir.name,
+                "filename": "phim.mkv",
+                "status": "done",
+                "video_path": video_name,
+                "srt_path": srt_name,
+                **metadata,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert manager.restore(tmp_path) == 1
+    restored = manager.get(workdir.name)
+    assert restored is not None
+    assert restored.target_language == expected_language
+
+    video_response = client.get(f"/api/jobs/{workdir.name}/download/video")
+    srt_response = client.get(f"/api/jobs/{workdir.name}/download/srt")
+
+    assert video_response.status_code == 200
+    assert srt_response.status_code == 200
+    assert f"phim_{suffix}.mp4" in video_response.headers["content-disposition"]
+    assert f"phim_{suffix}.srt" in srt_response.headers["content-disposition"]
 
 
 # ─── số liệu chất lượng mà giao diện dựa vào để cảnh báo ───
