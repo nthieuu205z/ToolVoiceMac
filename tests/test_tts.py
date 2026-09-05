@@ -3,6 +3,7 @@ from __future__ import annotations
 from pipeline.audio import duration_of, fit_to_slot, fit_to_window, parse_pcm_rate, pcm_to_array
 from pipeline.errors import QuotaExhaustedError
 from pipeline.models import Segment
+from pipeline.speech_runtime import speech_activity
 from pipeline.tts import synthesize_segments
 from tests.conftest import FakeGemini, sine_pcm
 
@@ -59,6 +60,25 @@ def test_each_segment_is_synthesized_in_the_target_language():
     )
 
     assert backend.languages == ["en-US"]
+
+
+def test_provider_calls_are_registered_as_production_activity():
+    class RecordingBackend:
+        engine = "recording"
+        batch_size = 0
+
+        def __init__(self):
+            self.active_counts = []
+
+        def synthesize(self, text, voice_id, *, language="vi-VN"):
+            self.active_counts.append(speech_activity.active_production(self.engine))
+            return sine_pcm(0.5)
+
+    backend = RecordingBackend()
+
+    synthesize_segments(backend, segments((0.0, 2.0, "Hello")), "Ava", workers=1)
+
+    assert backend.active_counts == [1]
 
 
 def test_untranslated_segments_are_skipped():

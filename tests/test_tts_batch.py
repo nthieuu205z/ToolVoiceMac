@@ -7,7 +7,8 @@ import pytest
 
 from pipeline.errors import JobCancelledError
 from pipeline.models import TTS_SAMPLE_RATE, Segment
-from pipeline.tts import _chia_lo, synthesize_segments
+from pipeline.speech_synthesis import _chia_lo
+from pipeline.tts import synthesize_segments
 
 
 def segments(*specs: tuple[float, float, str]) -> list[Segment]:
