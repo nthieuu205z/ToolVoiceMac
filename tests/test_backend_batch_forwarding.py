@@ -26,11 +26,11 @@ class SynthCoLo:
         self.lo_da_goi: list[list[str]] = []
         self.le_da_goi: list[str] = []
 
-    def synthesize_batch(self, texts, voice_id):
+    def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
         self.lo_da_goi.append(list(texts))
         return [np.zeros(TTS_SAMPLE_RATE, dtype="<i2").tobytes() for _ in texts]
 
-    def synthesize(self, text, voice_id):
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
         self.le_da_goi.append(text)
         return np.zeros(TTS_SAMPLE_RATE, dtype="<i2").tobytes()
 
@@ -41,9 +41,34 @@ class SynthKhongLo:
     def __init__(self):
         self.le_da_goi: list[str] = []
 
-    def synthesize(self, text, voice_id):
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
         self.le_da_goi.append(text)
         return np.zeros(TTS_SAMPLE_RATE, dtype="<i2").tobytes()
+
+
+class RecordingSynthesizer:
+    batch_size = 8
+
+    def __init__(self):
+        self.single_calls = []
+        self.batch_calls = []
+
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
+        self.single_calls.append((text, voice_id, language))
+        return b"\x00\x00"
+
+    def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
+        self.batch_calls.append((list(texts), voice_id, language))
+        return [b"\x00\x00" for _ in texts]
+
+
+class RecordingTranslator:
+    def __init__(self):
+        self.calls = []
+
+    def translate(self, texts, durations, context="", *, target_language="vi-VN"):
+        self.calls.append((list(texts), list(durations), context, target_language))
+        return list(texts)
 
 
 def _backend(synth):
@@ -75,6 +100,27 @@ def test_vo_boc_phoi_ra_mps_batch_safety():
         mps_batch_safe = False
 
     assert _backend(UnsafeSynth()).mps_batch_safe is False
+
+
+def test_composite_forwards_language_to_single_and_batch_synthesis():
+    synth = RecordingSynthesizer()
+    backend = CompositeBackend(recognizer=None, translator=None, synthesizer=synth)
+
+    backend.synthesize("hello", "voice", language="en-US")
+    backend.synthesize_batch(["one", "two"], "voice", language="en-US")
+
+    assert synth.single_calls == [("hello", "voice", "en-US")]
+    assert synth.batch_calls == [(["one", "two"], "voice", "en-US")]
+
+
+def test_composite_forwards_target_language_to_translation():
+    translator = RecordingTranslator()
+    backend = CompositeBackend(recognizer=None, translator=translator, synthesizer=None)
+
+    result = backend.translate(["hello"], [1.0], "earlier", target_language="en-US")
+
+    assert result == ["hello"]
+    assert translator.calls == [(["hello"], [1.0], "earlier", "en-US")]
 
 
 def test_vo_boc_bao_0_khi_nha_cung_cap_khong_gop_lo_duoc():

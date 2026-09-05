@@ -17,7 +17,9 @@ import threading
 
 from .audio import decode_to_pcm
 from .errors import SpeechServiceError
+from .languages import require_language
 from .models import TTS_SAMPLE_RATE
+from .voices import EDGE_VOICES
 
 log = logging.getLogger(__name__)
 
@@ -40,9 +42,19 @@ class EdgeSynthesizer:
     def __init__(self, attempts: int = DEFAULT_ATTEMPTS):
         self._attempts = max(1, attempts)
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
         """Chạy phần async trong luồng gọi — mỗi worker có event loop riêng của nó."""
-        mp3 = asyncio.run(self._synthesize_async(text, voice_id))
+        language_code = require_language(language).code
+        voice = next((item for item in EDGE_VOICES if item.id == voice_id), None)
+        if voice is not None and not voice.supports(language_code):
+            raise SpeechServiceError(
+                f"Giọng Edge {voice_id} không hỗ trợ ngôn ngữ {language_code}",
+                user_message="Giọng đã chọn không hỗ trợ ngôn ngữ này.",
+            )
+        native_voice_id = voice.native if voice is not None else voice_id
+        mp3 = asyncio.run(self._synthesize_async(text, native_voice_id))
         return decode_to_pcm(mp3, TTS_SAMPLE_RATE)
 
     async def _synthesize_async(self, text: str, voice_id: str) -> bytes:

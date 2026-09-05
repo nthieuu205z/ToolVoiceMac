@@ -15,7 +15,7 @@ import numpy as np
 
 from .audio import write_wav
 from .errors import JobCancelledError, NoSpeechDetectedError
-from .models import CancelFn, GeminiBackend, ProgressFn, Segment, never_cancel, noop_progress
+from .models import CancelFn, ProgressFn, Segment, SpeechRecognizer, never_cancel, noop_progress
 from .segmentation import Region
 
 log = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ def merge_sentence_fragments(segments: list[Segment], max_duration: float) -> li
 
 
 def transcribe_regions(
-    backend: GeminiBackend,
+    backend: SpeechRecognizer,
     samples: np.ndarray,
     rate: int,
     regions: list[Region],
@@ -170,7 +170,7 @@ def _chia_lo(so_luong: int, tran: int) -> list[int]:
 
 
 def _transcribe_theo_lo(
-    backend: GeminiBackend, samples: np.ndarray, rate: int, regions: list[Region], *,
+    backend: SpeechRecognizer, samples: np.ndarray, rate: int, regions: list[Region], *,
     progress: ProgressFn, should_cancel: CancelFn, progress_base: int, grand_total: int,
 ) -> tuple[str, list[Segment], list[str]]:
     """Chép cả lô một lượt trên GPU. Giữ nguyên hai lời hứa của đường cũ:
@@ -238,7 +238,7 @@ def _transcribe_theo_lo(
 
 
 def _transcribe_timed_theo_lo(
-    backend: GeminiBackend, samples: np.ndarray, rate: int, regions: list[Region], *,
+    backend: SpeechRecognizer, samples: np.ndarray, rate: int, regions: list[Region], *,
     progress: ProgressFn, should_cancel: CancelFn, progress_base: int, grand_total: int,
 ) -> tuple[str, list[Segment], list[str]]:
     """Chép cả lô lấy mốc thời gian cấp CÂU. Mỗi mảnh câu Whisper trả về → một Segment
@@ -303,7 +303,7 @@ def _transcribe_timed_theo_lo(
 
 
 def _transcribe_mot_vung(
-    backend: GeminiBackend, samples: np.ndarray, rate: int, region: Region,
+    backend: SpeechRecognizer, samples: np.ndarray, rate: int, region: Region,
 ) -> tuple[str, str]:
     """Đường lùi khi cả lô hỏng: cắt một vùng ra file tạm rồi chép riêng."""
     import tempfile
@@ -317,7 +317,7 @@ def _transcribe_mot_vung(
 
 
 def _transcribe_one(
-    backend: GeminiBackend, samples: np.ndarray, rate: int,
+    backend: SpeechRecognizer, samples: np.ndarray, rate: int,
     region: Region, clips_dir: Path, index: int,
 ) -> tuple[str, str]:
     """Cắt vùng ra WAV bằng numpy (không gọi ffmpeg) rồi gửi cho Gemini."""

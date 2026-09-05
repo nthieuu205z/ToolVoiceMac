@@ -9,7 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .errors import JobCancelledError, TranslationAlignmentError
-from .models import CancelFn, GeminiBackend, ProgressFn, Segment, never_cancel, noop_progress
+from .models import CancelFn, ProgressFn, Segment, Translator, never_cancel, noop_progress
 
 # Dịch theo lô để câu lệnh không vượt giới hạn token đầu ra của model. Đo thật: mỗi lượt
 # gọi bị trói bởi SỐ TOKEN XUẤT (một dòng dịch = một dòng ra), nên lô 80 câu tốn ~20s.
@@ -26,7 +26,7 @@ TRANSLATE_WORKERS = 6
 
 
 def translate_segments(
-    backend: GeminiBackend,
+    backend: Translator,
     segments: list[Segment],
     progress: ProgressFn = noop_progress,
     should_cancel: CancelFn = never_cancel,
@@ -68,7 +68,7 @@ def translate_segments(
     return segments
 
 
-def _translate_batch(backend: GeminiBackend, batch: list[Segment], context: str) -> list[str]:
+def _translate_batch(backend: Translator, batch: list[Segment], context: str) -> list[str]:
     """Gọi model, kiểm tra khớp số dòng, thử lại một lần trước khi bỏ cuộc."""
     texts = [seg.text for seg in batch]
     durations = [seg.duration for seg in batch]

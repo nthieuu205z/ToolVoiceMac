@@ -66,3 +66,23 @@ def test_the_client_is_built_only_once(spy_client):
     lazy._get()
     lazy._get()
     assert len(spy_client) == 1
+
+
+def test_lazy_gemini_forwards_translation_and_speech_languages():
+    calls = []
+
+    class _Runner:
+        def translate(self, texts, durations, context="", *, target_language="vi-VN"):
+            calls.append(("translate", target_language))
+            return list(texts)
+
+        def synthesize(self, text, voice_id, *, language="vi-VN"):
+            calls.append(("synthesize", language))
+            return b"pcm"
+
+    lazy = LazyGemini(_config("developer"))
+    lazy._runner = _Runner()
+
+    assert lazy.translate(["hello"], [1.0], target_language="en-US") == ["hello"]
+    assert lazy.synthesize("hello", "Kore", language="en-US") == b"pcm"
+    assert calls == [("translate", "en-US"), ("synthesize", "en-US")]

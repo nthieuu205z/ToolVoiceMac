@@ -27,11 +27,11 @@ class _Spy:
         self.calls.append("stt")
         return "en", f"{self.name}-text"
 
-    def translate(self, texts, durations, context=""):
+    def translate(self, texts, durations, context="", *, target_language="vi-VN"):
         self.calls.append("translate")
         return [f"{self.name}-vi"] * len(texts)
 
-    def synthesize(self, text, voice_id):
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
         self.calls.append("tts")
         return b"\x01"
 

@@ -16,7 +16,7 @@ from .audio import (
     truncate_with_fade,
 )
 from .errors import JobCancelledError, QuotaExhaustedError
-from .models import CancelFn, GeminiBackend, ProgressFn, Segment, never_cancel, noop_progress
+from .models import CancelFn, ProgressFn, Segment, SpeechSynthesizer, never_cancel, noop_progress
 
 log = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ def _draw_without_hole(synth, text: str) -> bytes:
 
 
 def synthesize_segments(
-    backend: GeminiBackend,
+    backend: SpeechSynthesizer,
     segments: list[Segment],
     voice_id: str,
     *,
@@ -217,7 +217,7 @@ def _fit_one(seg: Segment, pcm: bytes, max_speedup: float,
 
 
 def _render_one(
-    backend: GeminiBackend, seg: Segment, voice_id: str, max_speedup: float,
+    backend: SpeechSynthesizer, seg: Segment, voice_id: str, max_speedup: float,
     allowed_duration: float, resynthesize_bad: bool = False, fill_slowdown: float = 1.0,
 ) -> tuple[np.ndarray, float]:
     """Gọi TTS một lần cho câu bình thường — tenacity bên trong GeminiRunner lo việc thử
@@ -232,7 +232,7 @@ def _render_one(
 
 
 def _synthesize_single_fallback(
-    backend: GeminiBackend,
+    backend: SpeechSynthesizer,
     seg: Segment,
     voice_id: str,
     *,
@@ -298,7 +298,7 @@ def _lo_theo_do_dai(todo: list[tuple[int, Segment]], tran: int) -> list[list[int
 
 
 def _synthesize_theo_lo(
-    backend: GeminiBackend, segments: list[Segment], todo: list[tuple[int, Segment]],
+    backend: SpeechSynthesizer, segments: list[Segment], todo: list[tuple[int, Segment]],
     voice_id: str, *, max_speedup: float, total_duration: float | None,
     next_utterance_start: float | None, resynthesize_bad: bool, fill_slowdown: float,
     progress: ProgressFn, should_cancel: CancelFn,

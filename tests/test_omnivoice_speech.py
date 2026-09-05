@@ -83,6 +83,17 @@ def test_synthesize_returns_pcm16_and_passes_vietnamese_generation_options():
     assert model.calls[0]["kwargs"]["generation_config"].postprocess_output is True
 
 
+def test_english_synthesis_passes_omnivoice_language_name():
+    voice_id = _make_clone("clone-english")
+    model = FakeOmni()
+
+    OmniVoiceSynthesizer(model=model, transcriber=FakeTranscriber()).synthesize(
+        "Welcome", voice_id, language="en-US"
+    )
+
+    assert model.calls[0]["kwargs"]["language"] == ["English"]
+
+
 def test_ref_text_is_computed_once_and_persisted():
     voice_id = _make_clone()
     transcriber = FakeTranscriber(text="mẫu")

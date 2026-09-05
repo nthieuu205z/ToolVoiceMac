@@ -13,6 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from .models import SpeechRecognizer, SpeechSynthesizer, Translator
+
 
 @dataclass(frozen=True)
 class ProviderConfig:
@@ -65,17 +67,33 @@ class LazyGemini:
     def transcribe_clip(self, wav_path: Path) -> tuple[str, str]:
         return self._get().transcribe_clip(wav_path)
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
-        return self._get().translate(texts, durations, context)
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
+        return self._get().translate(
+            texts, durations, context, target_language=target_language
+        )
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
-        return self._get().synthesize(text, voice_id)
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
+        return self._get().synthesize(text, voice_id, language=language)
 
 
 class CompositeBackend:
     """Bám giao thức GeminiBackend, nhưng mỗi phương thức đi tới một nhà cung cấp khác nhau."""
 
-    def __init__(self, recognizer, translator, synthesizer):
+    def __init__(
+        self,
+        recognizer: SpeechRecognizer,
+        translator: Translator,
+        synthesizer: SpeechSynthesizer,
+    ):
         self._recognizer = recognizer
         self._translator = translator
         self._synthesizer = synthesizer
@@ -83,11 +101,22 @@ class CompositeBackend:
     def transcribe_clip(self, wav_path: Path) -> tuple[str, str]:
         return self._recognizer.transcribe_clip(wav_path)
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
-        return self._translator.translate(texts, durations, context)
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
+        return self._translator.translate(
+            texts, durations, context, target_language=target_language
+        )
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
-        return self._synthesizer.synthesize(text, voice_id)
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
+        return self._synthesizer.synthesize(text, voice_id, language=language)
 
     @property
     def engine(self) -> str:
@@ -116,8 +145,12 @@ class CompositeBackend:
     def mps_batch_safe(self) -> bool:
         return getattr(self._synthesizer, "mps_batch_safe", True)
 
-    def synthesize_batch(self, texts: list[str], voice_id: str) -> list[bytes]:
-        return self._synthesizer.synthesize_batch(texts, voice_id)
+    def synthesize_batch(
+        self, texts: list[str], voice_id: str, *, language: str = "vi-VN"
+    ) -> list[bytes]:
+        return self._synthesizer.synthesize_batch(
+            texts, voice_id, language=language
+        )
 
     def runtime_info(self) -> tuple[str, str, int]:
         """Expose non-sensitive TTS runtime facts for the monitor."""

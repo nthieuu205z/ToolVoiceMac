@@ -105,21 +105,32 @@ def overall_percent(stage: str, fraction: float) -> float:
     return round((done + STAGE_WEIGHTS[stage] * fraction) / total * 100, 1)
 
 
-class GeminiBackend(Protocol):
-    """Bề mặt Gemini mà pipeline cần. Test tiêm bản giả để không gọi API thật.
-
-    Lưu ý: KHÔNG hỏi Gemini mốc thời gian. Trên Developer API nó bịa ra
-    (xem pipeline/segmentation.py). Thời gian lấy từ ffmpeg, Gemini chỉ chép chữ.
-    """
-
+class SpeechRecognizer(Protocol):
     def transcribe_clip(self, wav_path) -> tuple[str, str]:
         """Trả về (mã ngôn ngữ nguồn, nguyên văn lời thoại) của một đoạn audio ngắn."""
         ...
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
+
+class Translator(Protocol):
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
         """Dịch sang tiếng Việt, trả về đúng số phần tử và đúng thứ tự như đầu vào."""
         ...
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
+
+class SpeechSynthesizer(Protocol):
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
         """Trả về PCM 16-bit little-endian, mono, TTS_SAMPLE_RATE Hz."""
         ...
+
+
+class GeminiBackend(SpeechRecognizer, Translator, SpeechSynthesizer, Protocol):
+    """Tên tương thích tạm thời cho backend có đủ ba khả năng của pipeline."""
