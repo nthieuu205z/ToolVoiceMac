@@ -35,3 +35,6 @@ voice-lab-*.png
 
 # Performance benchmark outputs are local-only and may contain environment facts.
 .hermes/perf/
+
+# Isolated Git worktrees used for feature development.
+.worktrees/
