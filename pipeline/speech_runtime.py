@@ -29,12 +29,19 @@ class SpeechActivity:
     def __init__(self) -> None:
         self._condition = Condition()
         self._production: defaultdict[str, int] = defaultdict(int)
+        self._waiting_production: defaultdict[str, int] = defaultdict(int)
         self._previews: set[str] = set()
 
     @contextmanager
     def production(self, provider: str) -> Iterator[None]:
         with self._condition:
-            self._condition.wait_for(lambda: provider not in self._previews)
+            self._waiting_production[provider] += 1
+            try:
+                self._condition.wait_for(lambda: provider not in self._previews)
+            finally:
+                self._waiting_production[provider] -= 1
+                if self._waiting_production[provider] == 0:
+                    del self._waiting_production[provider]
             self._production[provider] += 1
         try:
             yield
@@ -48,7 +55,11 @@ class SpeechActivity:
     @contextmanager
     def preview(self, provider: str) -> Iterator[None]:
         with self._condition:
-            if self._production[provider] or provider in self._previews:
+            if (
+                self._production[provider]
+                or self._waiting_production[provider]
+                or provider in self._previews
+            ):
                 raise PreviewBusyError(provider)
             self._previews.add(provider)
         try:

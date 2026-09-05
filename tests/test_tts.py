@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from threading import Event, Lock, Thread
+
 from pipeline.audio import duration_of, fit_to_slot, fit_to_window, parse_pcm_rate, pcm_to_array
 from pipeline.errors import QuotaExhaustedError
 from pipeline.models import Segment
@@ -79,6 +81,63 @@ def test_provider_calls_are_registered_as_production_activity():
     synthesize_segments(backend, segments((0.0, 2.0, "Hello")), "Ava", workers=1)
 
     assert backend.active_counts == [1]
+
+
+def test_workers_bound_non_batch_provider_overlap_for_video_synthesis():
+    class BlockingBackend:
+        engine = "blocking"
+        batch_size = 0
+
+        def __init__(self):
+            self.lock = Lock()
+            self.release = Event()
+            self.two_active = Event()
+            self.active = 0
+            self.max_active = 0
+            self.calls = 0
+
+        def synthesize(self, text, voice_id, *, language="vi-VN"):
+            with self.lock:
+                self.calls += 1
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+                if self.active == 2:
+                    self.two_active.set()
+            try:
+                self.release.wait()
+                return sine_pcm(0.1)
+            finally:
+                with self.lock:
+                    self.active -= 1
+
+    backend = BlockingBackend()
+    errors: list[BaseException] = []
+
+    def run_synthesis() -> None:
+        try:
+            synthesize_segments(
+                backend,
+                segments((0.0, 1.0, "one"), (2.0, 3.0, "two"), (4.0, 5.0, "three")),
+                "voice",
+                language="en-US",
+                workers=2,
+            )
+        except BaseException as exc:
+            errors.append(exc)
+
+    worker = Thread(target=run_synthesis)
+    try:
+        worker.start()
+        assert backend.two_active.wait(timeout=1)
+        assert backend.max_active == 2
+    finally:
+        backend.release.set()
+        worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert backend.calls == 3
+    assert backend.max_active == 2
 
 
 def test_untranslated_segments_are_skipped():

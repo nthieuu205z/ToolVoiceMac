@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from pipeline.errors import JobCancelledError
+from pipeline.errors import GeminiAPIError, JobCancelledError
 from pipeline.models import TTS_SAMPLE_RATE
 from pipeline.speech_synthesis import _chia_lo, synthesize_texts
 
@@ -43,6 +43,44 @@ class RecordingBackend:
         return pcm(1)
 
 
+class BatchRaisesValueError:
+    batch_size = 8
+
+    def __init__(self):
+        self.single_calls: list[tuple[str, str, str]] = []
+
+    def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
+        raise ValueError("ordinary non-runtime batch failure")
+
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
+        self.single_calls.append((text, voice_id, language))
+        return pcm({"one": 1, "two": 2}[text])
+
+
+class GeminiFailureBackend:
+    batch_size = 0
+
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
+        if text == "private bad input":
+            raise GeminiAPIError("provider echoed private bad input")
+        return pcm(1)
+
+
+class LengthGroupingBackend:
+    batch_size = 3
+
+    def __init__(self):
+        self.batch_calls: list[list[str]] = []
+
+    def synthesize_batch(self, texts, voice_id, *, language="vi-VN"):
+        self.batch_calls.append(list(texts))
+        markers = {"a": 1, "longest": 5, "mid": 3, "two": 4, "bb": 2}
+        return [pcm(markers[text]) for text in texts]
+
+    def synthesize(self, text, voice_id, *, language="vi-VN"):
+        raise AssertionError("balanced groups never contain one item")
+
+
 def test_batch_fallback_preserves_indexes_and_marks_failed_items():
     backend = BatchFailsThenSingles(bad_text="two")
 
@@ -54,11 +92,11 @@ def test_batch_fallback_preserves_indexes_and_marks_failed_items():
     )
 
     assert audio == [pcm(1), None, pcm(3)]
-    assert backend.batch_calls == [(["one", "two", "three"], "voice", "en-US")]
+    assert backend.batch_calls == [(["three", "one", "two"], "voice", "en-US")]
     assert backend.single_calls == [
+        ("three", "voice", "en-US"),
         ("one", "voice", "en-US"),
         ("two", "voice", "en-US"),
-        ("three", "voice", "en-US"),
     ]
     assert any("1/3" in warning for warning in warnings)
     assert all("secret submitted text" not in warning for warning in warnings)
@@ -77,6 +115,34 @@ def test_cancellation_runs_before_first_provider_call():
         )
 
     assert backend.calls == []
+
+
+def test_non_runtime_batch_exception_falls_back_item_by_item():
+    backend = BatchRaisesValueError()
+
+    audio, warnings = synthesize_texts(
+        backend, ["one", "two"], "voice", language="en-US"
+    )
+
+    assert audio == [pcm(1), pcm(2)]
+    assert warnings == []
+    assert backend.single_calls == [
+        ("one", "voice", "en-US"),
+        ("two", "voice", "en-US"),
+    ]
+
+
+def test_gemini_api_error_is_a_private_partial_failure():
+    audio, warnings = synthesize_texts(
+        GeminiFailureBackend(),
+        ["one", "private bad input", "three"],
+        "voice",
+        language="en-US",
+    )
+
+    assert audio == [pcm(1), None, pcm(1)]
+    assert any("1/3" in warning for warning in warnings)
+    assert all("private bad input" not in warning for warning in warnings)
 
 
 def test_single_synthesis_preserves_order_language_and_progress():
@@ -103,6 +169,21 @@ def test_single_synthesis_preserves_order_language_and_progress():
         ("synthesize", 0.5),
         ("synthesize", 1.0),
     ]
+
+
+def test_length_grouped_batch_calls_keep_outputs_aligned_to_input_indexes():
+    backend = LengthGroupingBackend()
+
+    audio, warnings = synthesize_texts(
+        backend,
+        ["a", "longest", "mid", "two", "bb"],
+        "voice",
+        language="en-US",
+    )
+
+    assert backend.batch_calls == [["longest", "mid", "two"], ["bb", "a"]]
+    assert audio == [pcm(1), pcm(5), pcm(3), pcm(4), pcm(2)]
+    assert warnings == []
 
 
 def test_batch_sizes_are_balanced():

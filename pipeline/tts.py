@@ -125,6 +125,7 @@ def synthesize_segments(
                 message,
             ),
             should_cancel=should_cancel,
+            workers=workers,
         )
 
         # Provider local miễn phí được phép đọc lại đúng những mẫu có lỗ hổng xấu.
