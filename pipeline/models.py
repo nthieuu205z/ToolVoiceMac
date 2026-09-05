@@ -85,6 +85,7 @@ class PipelineResult:
     video_path: str
     srt_path: str
     language: str = ""
+    target_language: str = "vi-VN"
     segment_count: int = 0
     attempted_count: int = 0
     spoken_count: int = 0

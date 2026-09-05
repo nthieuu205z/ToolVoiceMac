@@ -95,6 +95,18 @@ def test_english_runner_uses_target_aware_output_names(stub_stages):
     assert result.srt_path.endswith("output_en.srt")
 
 
+def test_runner_result_reports_the_canonical_target_language(stub_stages):
+    result = run_pipeline(
+        None,
+        stub_stages / "in.mp4",
+        stub_stages,
+        PipelineOptions(voice_id="v", target_language="en"),
+        media=MEDIA,
+    )
+
+    assert result.target_language == "en-US"
+
+
 # ─── đọc lại lượt xấu: chỉ engine CÓ khuyết tật lỗ hổng im lặng mới cần ───
 
 def _capture_resynthesize(monkeypatch) -> dict:

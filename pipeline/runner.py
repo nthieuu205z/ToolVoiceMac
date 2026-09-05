@@ -206,6 +206,7 @@ def run_pipeline(
         video_path=str(out_video),
         srt_path=str(srt_path),
         language=language,
+        target_language=target_language,
         segment_count=len(segments),
         attempted_count=attempted,
         spoken_count=len(fitted),

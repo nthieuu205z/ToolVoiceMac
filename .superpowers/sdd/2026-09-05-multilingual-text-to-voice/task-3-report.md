@@ -112,3 +112,77 @@ Warnings were limited to the existing Starlette `httpx` deprecation and Python 3
 ## Concerns
 
 No blocking concerns. The full suite still emits two unrelated upstream deprecation warnings. Compatibility suffix detection deliberately relies on Task 3's persistent `output_en.*` naming because generic job-language persistence is outside this task's scope.
+
+## Fix Round 1
+
+Base: `6016182751eac8123b293e102716b0c6a945f01d`.
+
+Scope was limited to the two accepted findings: parse the CLI target before choosing its default voice, reject an incompatible voice/language pair before `build_backend`, and expose the canonical target on `PipelineResult`. Per controller ruling, `Job`, `JobManager`, snapshots, and persistence were not changed; Task 6 retains that ownership. Compatibility output naming was also left unchanged.
+
+All pytest commands below used the same proxy sanitization as the initial implementation: split `NO_PROXY` and `no_proxy` on commas, remove only tokens exactly equal to `::1` or `::1/128`, and preserve every other token.
+
+### Fix Round 1 RED
+
+Command:
+
+```text
+pytest tests/test_run_pipeline_cli.py tests/test_runner.py -q
+```
+
+Result: exit 1 with exactly the three intended failures:
+
+```text
+FAILED test_cli_rejects_explicit_incompatible_voice_before_building_backend
+AssertionError: assert 0 == 1
+FAILED test_cli_chooses_an_english_compatible_default_voice
+AssertionError: assert 'vi-VN-HoaiMyNeural' == 'en-US-AvaMultilingualNeural'
+FAILED test_runner_result_reports_the_canonical_target_language
+AttributeError: 'PipelineResult' object has no attribute 'target_language'
+```
+
+### Fix Round 1 GREEN
+
+The first GREEN attempt exposed one obsolete test double: the existing clone-routing test mocked `available_voices` but not the newly introduced `is_available` boundary. It exited 1 only for `test_cli_routes_clone_provider_without_legacy_configuration`, with stderr `Giọng đọc không hỗ trợ ngôn ngữ đã chọn.` The test double was extended to declare its synthetic clone voice available; production code was unchanged for that correction.
+
+Rerunning the RED command then completed at 100% with exit 0:
+
+```text
+...............                                                          [100%]
+```
+
+Focused CLI/runner/API command:
+
+```text
+pytest tests/test_run_pipeline_cli.py tests/test_runner.py tests/test_api.py -q
+```
+
+Result: exit 0, 100%:
+
+```text
+...........................................                              [100%]
+```
+
+Task 3 focused slice:
+
+```text
+pytest tests/test_translate_alignment.py tests/test_runner.py tests/test_tts.py tests/test_tts_batch.py tests/test_subtitles.py tests/test_api.py tests/test_run_pipeline_cli.py -q
+```
+
+Result: exit 0, 100%:
+
+```text
+........................................................................ [ 63%]
+.........................................                                [100%]
+```
+
+Both broader GREEN runs emitted only the pre-existing Starlette `httpx` deprecation warning.
+
+### Fix Round 1 Changed Files and Self-Review
+
+- `scripts/run_pipeline_cli.py` — performs a target-only preliminary parse, computes a target-compatible provider default, and validates the final pair before backend construction.
+- `pipeline/models.py` and `pipeline/runner.py` — add `PipelineResult.target_language` with a Vietnamese compatibility default and populate the runner's canonical target.
+- `tests/test_run_pipeline_cli.py` and `tests/test_runner.py` — cover explicit incompatibility, English default selection, early rejection, and canonical result metadata.
+- `task-3-report.md` — records this fix evidence.
+- `git diff --check` exited 0. The diff contains no `Job`/`JobManager` changes and no unrelated files.
+
+No new blocking concerns. Generic job target-language metadata remains intentionally deferred to Task 6.
