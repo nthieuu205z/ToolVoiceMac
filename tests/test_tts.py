@@ -11,6 +11,23 @@ def segments(*specs: tuple[float, float, str]) -> list[Segment]:
     return [Segment(start, end, "src", vi) for start, end, vi in specs]
 
 
+def test_synthesis_announces_the_stage_before_the_first_voice_call():
+    backend = FakeGemini(tts_duration=0.5)
+    events = []
+
+    synthesize_segments(
+        backend,
+        segments((0.0, 2.0, "chào")),
+        "Kore",
+        workers=1,
+        progress=lambda stage, fraction, message: events.append((stage, fraction, message)),
+    )
+
+    assert events[0][0] == "synthesize"
+    assert events[0][1] == 0.0
+    assert "giọng" in events[0][2]
+
+
 def test_each_segment_is_synthesized_with_the_chosen_voice():
     backend = FakeGemini(tts_duration=0.5)
     fitted, warnings = synthesize_segments(backend, segments((0.0, 2.0, "chào")), "Kore", workers=1)
@@ -225,7 +242,7 @@ def test_normal_speech_is_never_touched_by_the_runaway_guard():
 def test_short_normal_speech_survives_the_runaway_guard():
     """Câu NGẮN đọc bình thường (2,5–3,5s) KHÔNG được bị cắt.
 
-    VieNeu có chi phí cố định ~2–3,5s mỗi lần đọc, gần như không theo độ dài text.
+    Model có chi phí cố định ~2–3,5s mỗi lần đọc, gần như không theo độ dài text.
     Ngưỡng len/8+1 tuyến tính quá chặt với câu ngắn: "Thứ hai," (8 ký tự) chỉ cho
     2,0s trong khi giọng thật ~3s → cắt cụt tiếng thật (nghe 'ngắt đột ngột').
     """

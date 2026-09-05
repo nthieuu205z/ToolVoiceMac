@@ -29,20 +29,20 @@ _BORROW_RESERVE = 0.4
 
 # Chống TTS "chạy hoang": model tự hồi quy thỉnh thoảng bịa thêm lời khi đầu vào quá
 # ngắn — đo thật: chữ "Và" (2 ký tự) sinh ra 7,1 giây giọng nói, kéo 15 câu sau lệch
-# 3–6 giây. Đọc chậm nhất còn hợp lý là ~8 ký tự/giây (VieNeu thực tế đọc 14–17),
+# 3–6 giây. Đọc chậm nhất còn hợp lý là ~8 ký tự/giây,
 # vượt trần đó là audio bịa — cắt bỏ, từ thật luôn nằm ở phần đầu.
 _RUNAWAY_CHARS_PER_SECOND = 8.0
 _RUNAWAY_HEADROOM_SECONDS = 1.0
-# Sàn cố định: VieNeu tốn ~2–3,5s cho MỌI lượt đọc bất kể dài ngắn (ngữ điệu, hơi thở,
+# Sàn cố định: model tốn một khoảng thời gian nền cho MỌI lượt đọc bất kể dài ngắn (ngữ điệu, hơi thở,
 # đuôi câu), gần như không theo số ký tự. Ngưỡng tuyến tính len/8+1 quá chặt với câu
 # ngắn — "Thứ hai," (8 ký tự) chỉ được 2,0s trong khi giọng thật ~3s → cắt cụt tiếng thật
 # (nghe "ngắt đột ngột"). Đo raw: đọc ngắn bình thường ≤3,5s, chạy hoang ≥6s. Sàn 4s tách
 # sạch hai loại — câu ngắn thật sống, còn "Và"→8s vẫn bị cắt.
 _RUNAWAY_MIN_SECONDS = 4.0
 
-# Lỗ hổng im lặng dài hơn mức này ở GIỮA một lượt đọc là bất thường (VieNeu rút phải mẫu
-# xấu), không phải nghỉ lấy hơi giữa câu (~0,4–0,9s đo thật). Đọc lại tối đa _RESYNTH_ATTEMPTS
-# lần, giữ bản có lỗ hổng nhỏ nhất. Chỉ bật cho backend chạy local (đọc lại không tốn gì);
+# Lỗ hổng im lặng dài hơn mức này ở GIỮA một lượt đọc là bất thường, không phải nghỉ lấy hơi
+# giữa câu. Đọc lại tối đa _RESYNTH_ATTEMPTS lần, giữ bản có lỗ hổng nhỏ nhất. Chỉ bật cho
+# backend local miễn phí;
 # Gemini TTS tính tiền theo lượt nên để tắt.
 _MAX_INTERNAL_SILENCE = 1.3
 _RESYNTH_ATTEMPTS = 2
@@ -51,8 +51,8 @@ _RESYNTH_ATTEMPTS = 2
 def _draw_without_hole(synth, text: str) -> bytes:
     """Đọc `text`; nếu audio có lỗ hổng im lặng bất thường thì đọc lại, giữ bản sạch nhất.
 
-    `synth` là hàm text→pcm đã chốt sẵn voice_id. VieNeu ngẫu nhiên nên lần đọc lại
-    thường không dính lại đúng lỗ hổng đó; giữ bản có khoảng lặng giữa câu nhỏ nhất.
+    `synth` là hàm text→pcm đã chốt sẵn voice_id. Các model sinh ngẫu nhiên có thể tạo
+    khoảng lặng bất thường; giữ bản có khoảng lặng giữa câu nhỏ nhất.
     """
     best = synth(text)
     best_gap = longest_internal_silence(pcm_to_array(best)) if best else 0.0
@@ -82,7 +82,9 @@ def synthesize_segments(
     progress_base: int = 0,
     progress_total: int | None = None,
 ) -> tuple[list[tuple[Segment, np.ndarray]], list[str]]:
-    """Tạo giọng đọc song song. Trả về ([(lượt phát ngôn, mẫu âm thanh)], cảnh báo).
+    """Tạo giọng đọc theo lô GPU hoặc song song cho provider không hỗ trợ batch.
+
+    Trả về ([(lượt phát ngôn, mẫu âm thanh)], cảnh báo).
 
     Tiếng Việt dài hơn khung gốc thì trước hết cho MƯỢN khoảng lặng phía sau (tới tận
     mốc câu kế tiếp) — đọc tốc độ tự nhiên tràn vào chỗ im lặng nghe thật hơn hẳn
@@ -106,9 +108,14 @@ def synthesize_segments(
     failed = 0
     quota_hit = False
 
-    # Engine GPU đọc cả một lô trong một lượt gọi — nhanh hơn ~20 lần so với từng câu một
-    # (xem pipeline/vieneu_batch.py). Backend nào không gộp được thì trả batch_size 0.
-    if getattr(backend, "batch_size", 0) > 0:
+    progress("synthesize", progress_base / max(1, grand_total),
+             f"Đang tạo giọng đọc ({progress_base}/{grand_total})")
+
+    # Engine GPU đọc cả một lô trong một lượt gọi. Backend nào không gộp được thì trả 0.
+    batch_size = int(getattr(backend, "batch_size", 0))
+    if batch_size > 1 and getattr(backend, "mps_batch_safe", True) is False:
+        batch_size = 1
+    if batch_size > 0 and hasattr(backend, "synthesize_batch"):
         return _synthesize_theo_lo(
             backend, segments, todo, voice_id, max_speedup=max_speedup,
             total_duration=total_duration, next_utterance_start=next_utterance_start,
@@ -117,6 +124,8 @@ def synthesize_segments(
             progress_base=progress_base, grand_total=grand_total,
         )
 
+    progress("synthesize", progress_base / max(1, grand_total),
+             f"Đang đọc từng câu ({progress_base}/{grand_total})")
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {
             pool.submit(_render_one, backend, seg, voice_id, max_speedup,
@@ -132,9 +141,6 @@ def synthesize_segments(
                 raise JobCancelledError()
 
             index, _ = futures[future]
-            progress("synthesize", (progress_base + done) / max(1, grand_total),
-                     f"Đang đọc lượt thoại {progress_base + done}/{grand_total}")
-
             try:
                 samples, overflow = future.result()
             except QuotaExhaustedError:
@@ -146,6 +152,8 @@ def synthesize_segments(
                 failed += 1
                 continue
 
+            progress("synthesize", (progress_base + done) / max(1, grand_total),
+                     f"Đang đọc lượt thoại {progress_base + done}/{grand_total}")
             results[index] = samples
             # Phụ đề bám theo thời lượng đọc thật, không theo khung thời gian gốc.
             segments[index].spoken_duration = duration_of(samples)
@@ -163,7 +171,7 @@ def synthesize_segments(
         )
 
     fitted = [(segments[i], results[i]) for i in sorted(results)]
-    progress("synthesize", min(1.0, (progress_base + len(todo)) / max(1, grand_total)),
+    progress("synthesize", min(1.0, (progress_base + len(fitted)) / max(1, grand_total)),
              f"Đã tạo {progress_base + len(fitted)}/{grand_total} lượt thoại")
     return fitted, warnings
 
@@ -221,6 +229,32 @@ def _render_one(
     else:
         pcm = backend.synthesize(seg.text_vi, voice_id)
     return _fit_one(seg, pcm, max_speedup, allowed_duration, fill_slowdown)
+
+
+def _synthesize_single_fallback(
+    backend: GeminiBackend,
+    seg: Segment,
+    voice_id: str,
+    *,
+    resynthesize_bad: bool = False,
+    prefer_batch: bool = False,
+) -> list[bytes]:
+    """Synthesize one segment and keep failures local to that segment."""
+    try:
+        if prefer_batch and hasattr(backend, "synthesize_batch"):
+            pcms = backend.synthesize_batch([seg.text_vi], voice_id)
+            if len(pcms) != 1:
+                raise RuntimeError("provider không trả đúng một audio cho lô đơn")
+            return pcms
+        if resynthesize_bad:
+            return [_draw_without_hole(
+                lambda text: backend.synthesize(text, voice_id),
+                seg.text_vi,
+            )]
+        return [backend.synthesize(seg.text_vi, voice_id)]
+    except Exception as exc:
+        log.warning("Không đọc được lượt thoại: %s", exc)
+        return [b""]
 
 
 def _chia_lo(so_luong: int, tran: int) -> list[int]:
@@ -283,27 +317,43 @@ def _synthesize_theo_lo(
 
     # ── ĐỌC theo lô trên GPU (câu độ dài gần nhau → không phí frame chờ câu dài nhất) ──
     raw: dict[int, bytes] = {}
-    for grp in _lo_theo_do_dai(todo, max(1, backend.batch_size)):
+    batch_limit = max(1, int(getattr(backend, "batch_size", 1)))
+    if getattr(backend, "mps_batch_safe", True) is False:
+        batch_limit = 1
+    batches = _lo_theo_do_dai(todo, batch_limit)
+    total_batches = len(batches)
+    for batch_number, grp in enumerate(batches, start=1):
         if should_cancel():
             raise JobCancelledError()
 
         lo = [todo[k] for k in grp]
-        try:
-            pcms = backend.synthesize_batch([seg.text_vi for _, seg in lo], voice_id)
-        except QuotaExhaustedError:
-            quota_hit = True
-            failed += len(lo)
-            xong += len(lo)
-            continue
-        except Exception as exc:
-            log.warning("Lô %d lượt thoại hỏng (%s) — đọc lại từng câu một", len(lo), exc)
-            pcms = []
-            for _, seg in lo:
-                try:
-                    pcms.append(backend.synthesize(seg.text_vi, voice_id))
-                except Exception as le:
-                    log.warning("Không đọc được lượt thoại: %s", le)
-                    pcms.append(b"")
+        if len(lo) == 1:
+            pcms = _synthesize_single_fallback(
+                backend,
+                lo[0][1],
+                voice_id,
+                resynthesize_bad=resynthesize_bad,
+                prefer_batch=getattr(backend, "mps_batch_safe", True) is False,
+            )
+        else:
+            try:
+                pcms = backend.synthesize_batch([seg.text_vi for _, seg in lo], voice_id)
+                if len(pcms) != len(lo):
+                    raise RuntimeError(
+                        f"provider trả {len(pcms)} audio cho {len(lo)} câu trong lô"
+                    )
+            except QuotaExhaustedError:
+                quota_hit = True
+                failed += len(lo)
+                xong += len(lo)
+                continue
+            except Exception as exc:
+                log.warning("Lô %d lượt thoại hỏng (%s) — đọc lại từng câu một", len(lo), exc)
+                pcms = []
+                for _, seg in lo:
+                    pcms.extend(_synthesize_single_fallback(
+                        backend, seg, voice_id, resynthesize_bad=resynthesize_bad
+                    ))
 
         for (index, seg), pcm in zip(lo, pcms):
             xong += 1
@@ -315,8 +365,12 @@ def _synthesize_theo_lo(
                 pcm = _draw_without_hole(lambda t: backend.synthesize(t, voice_id), seg.text_vi)
             raw[index] = pcm
 
-        progress("synthesize", (progress_base + xong) / max(1, grand_total),
-                 f"Đang đọc lượt thoại {progress_base + xong}/{grand_total}")
+        progress(
+            "synthesize",
+            (progress_base + xong) / max(1, grand_total),
+            f"Đã xử lý lô {batch_number}/{total_batches} · "
+            f"lượt thoại {progress_base + xong}/{grand_total}",
+        )
 
     if should_cancel():
         raise JobCancelledError()

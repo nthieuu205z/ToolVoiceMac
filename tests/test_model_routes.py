@@ -1,4 +1,4 @@
-"""Tải model chạy trên máy (Whisper, VieNeu) thủ công, có tiến trình.
+"""Tải model chạy trên máy (Whisper, OmniVoice) thủ công, có tiến trình.
 
 Không có màn này thì job đầu tiên đứng im vài phút để tải ngầm, không ai biết vì sao.
 Test không chạm mạng và không tải gì.
@@ -17,7 +17,8 @@ from backend.model_manager import ModelDownloader
 from pipeline.model_store import ModelInfo, ModelSpec, RepoSpec
 
 WHISPER = ModelSpec(key="whisper", label="Whisper 'small'", repos=[RepoSpec("Systran/faster-whisper-small")])
-VIENEU = ModelSpec(key="vieneu", label="VieNeu-TTS", repos=[RepoSpec("pnnbao-ump/VieNeu-TTS-v3-Turbo")])
+OMNI = ModelSpec(key="omnivoice", label="OmniVoice", repos=[RepoSpec("k2-fsa/OmniVoice")])
+
 
 
 @pytest.fixture
@@ -44,7 +45,7 @@ def whisper_only(monkeypatch):
 
 @pytest.fixture
 def both_models(monkeypatch):
-    monkeypatch.setattr(type(settings), "model_specs", property(lambda self: [WHISPER, VIENEU]))
+    monkeypatch.setattr(type(settings), "model_specs", property(lambda self: [WHISPER, OMNI]))
 
 
 # ─── báo cáo trạng thái ───
@@ -90,26 +91,38 @@ def test_an_invalid_model_name_is_an_error_not_a_crash(client, whisper_only, mon
 
 # ─── nhiều model cùng lúc ───
 
-def test_both_models_are_listed_when_vieneu_is_the_tts_provider(client, both_models, monkeypatch):
+def test_whisper_and_omnivoice_models_are_listed(client, both_models, monkeypatch):
     monkeypatch.setattr("pipeline.model_store.describe",
-                        describe_as({"whisper": (True, 100, 100), "vieneu": (False, 0, 609_000_000)}))
+                        describe_as({"whisper": (True, 100, 100), "omnivoice": (False, 0, 609_000_000)}))
     body = client.get("/api/model").json()
 
-    assert [m["key"] for m in body["models"]] == ["whisper", "vieneu"]
+    assert [m["key"] for m in body["models"]] == ["whisper", "omnivoice"]
     assert body["ready"] is False  # một cái chưa sẵn sàng thì cả bộ chưa sẵn sàng
+
+
+def test_model_status_never_lists_legacy_provider(client, monkeypatch):
+    monkeypatch.setattr(type(settings), "model_specs", property(lambda self: [OMNI]))
+    monkeypatch.setattr(
+        "pipeline.model_store.describe",
+        describe_as({"omnivoice": (True, 100, 100)}),
+    )
+
+    body = client.get("/api/model").json()
+
+    assert [model["key"] for model in body["models"]] == ["omnivoice"]
 
 
 def test_downloading_one_model_does_not_mark_the_other_as_downloading(client, both_models, monkeypatch):
     """Chỉ model đang được tải mới hiện thanh tiến trình."""
     monkeypatch.setattr("pipeline.model_store.describe",
-                        describe_as({"whisper": (False, 0, 100), "vieneu": (False, 0, 100)}))
+                        describe_as({"whisper": (False, 0, 100), "omnivoice": (False, 0, 100)}))
     monkeypatch.setattr("pipeline.model_store.download", lambda spec: None)
 
-    model_manager.downloader._active_key = "vieneu"
+    model_manager.downloader._active_key = "omnivoice"
     model_manager.downloader._status = "downloading"
 
     models = {m["key"]: m for m in client.get("/api/model").json()["models"]}
-    assert models["vieneu"]["status"] == "downloading"
+    assert models["omnivoice"]["status"] == "downloading"
     assert models["whisper"]["status"] == "idle"
 
 
@@ -126,19 +139,24 @@ def _clone_resolves_to(monkeypatch, value):
 
 def test_omnivoice_model_listed_when_clone_provider_is_omnivoice(monkeypatch):
     monkeypatch.setattr(settings, "stt_provider", "gemini")   # bỏ spec whisper
-    monkeypatch.setattr(settings, "tts_provider", "edge")     # bỏ spec vieneu
+    monkeypatch.setattr(settings, "tts_provider", "edge")
     _clone_resolves_to(monkeypatch, "omnivoice")              # coi như omnivoice đã cài
     assert [s.key for s in settings.model_specs] == ["omnivoice"]
 
 
-def test_vieneu_model_listed_when_clone_falls_back_to_vieneu(monkeypatch):
-    """CLONE_TTS_PROVIDER=omnivoice nhưng CHƯA cài gói → lùi về vieneu (cấu hình MẶC ĐỊNH khi
-    người dùng chưa cài omnivoice). VieNeu vẫn phải được liệt kê để tải trước, nếu không job
-    nhân bản đầu tải ngầm ~610 MB giữa chừng, không có thanh tiến trình."""
+def test_missing_omnivoice_is_not_silently_replaced(monkeypatch):
+    """Thiếu OmniVoice thì không âm thầm thay bằng một engine clone khác."""
     monkeypatch.setattr(settings, "stt_provider", "gemini")   # bỏ spec whisper
-    monkeypatch.setattr(settings, "tts_provider", "edge")     # preset KHÔNG phải vieneu
-    _clone_resolves_to(monkeypatch, "vieneu")
-    assert [s.key for s in settings.model_specs] == ["vieneu"]
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+    _clone_resolves_to(monkeypatch, None)
+    assert [s.key for s in settings.model_specs] == []
+
+
+def test_invalid_tts_provider_is_rejected_before_model_lookup(monkeypatch):
+    monkeypatch.setattr(settings, "tts_provider", "unsupported")
+
+    with pytest.raises(ValueError, match="preset"):
+        settings.validate_providers()
 
 
 def test_omnivoice_model_absent_when_cloning_disabled(monkeypatch):
@@ -154,12 +172,13 @@ def test_download_starts_the_requested_model(client, both_models, monkeypatch):
     started = []
     monkeypatch.setattr(model_manager.downloader, "start", lambda spec: started.append(spec.key))
 
-    assert client.post("/api/model/download?key=vieneu").json() == {"started": True, "key": "vieneu"}
-    assert started == ["vieneu"]
+    monkeypatch.setattr(type(settings), "model_specs", property(lambda self: [OMNI]))
+    assert client.post("/api/model/download?key=omnivoice").json() == {"started": True, "key": "omnivoice"}
+    assert started == ["omnivoice"]
 
 
 def test_downloading_an_unknown_model_is_a_404(client, whisper_only):
-    assert client.post("/api/model/download?key=vieneu").status_code == 404
+    assert client.post("/api/model/download?key=omnivoice").status_code == 404
 
 
 def test_a_second_download_is_refused_while_one_runs(client, whisper_only, monkeypatch):

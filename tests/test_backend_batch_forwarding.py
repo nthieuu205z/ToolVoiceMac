@@ -1,12 +1,11 @@
 """CompositeBackend phải chuyển tiếp khả năng gộp lô của nhà cung cấp giọng đọc.
 
-Bài học đắt: gộp lô của VieNeu đã chạy đúng, test đơn vị xanh, benchmark nhanh gấp 20 lần
+Bài học đắt: gộp lô của provider local đã chạy đúng, test đơn vị xanh, benchmark nhanh gấp nhiều lần
 — nhưng trong app THẬT nó không hề chạy. Vì pipeline nói chuyện với CompositeBackend, mà
 vỏ bọc đó chỉ phơi ra synthesize(). tts.py hỏi `backend.batch_size`, không thấy, và lặng lẽ
 lùi về đọc từng câu một. Không lỗi, không cảnh báo, chỉ là chậm y như cũ.
 
-Benchmark hồi đó truyền thẳng VieNeuSynthesizer vào synthesize_segments nên đi vòng qua
-đúng cái vỏ này — nó đo một đường code mà người dùng không bao giờ chạy tới.
+Benchmark phải đi qua đúng CompositeBackend như ứng dụng thật.
 """
 
 from __future__ import annotations
@@ -19,7 +18,7 @@ from pipeline.tts import synthesize_segments
 
 
 class SynthCoLo:
-    """Nhà cung cấp giọng đọc có gộp lô (như VieNeu trên GPU)."""
+    """Nhà cung cấp giọng đọc có gộp lô trên GPU."""
 
     batch_size = 32
 
@@ -37,7 +36,7 @@ class SynthCoLo:
 
 
 class SynthKhongLo:
-    """Nhà cung cấp không gộp lô được (edge-tts, Gemini, VieNeu trên CPU)."""
+    """Provider không gộp lô được (edge-tts hoặc Gemini)."""
 
     def __init__(self):
         self.le_da_goi: list[str] = []
@@ -58,6 +57,24 @@ def _segs():
 
 def test_vo_boc_phoi_ra_batch_size_cua_nha_cung_cap():
     assert _backend(SynthCoLo()).batch_size == 32
+
+
+def test_vo_boc_phoi_ra_engine_va_device_cua_nha_cung_cap():
+    class RuntimeSynth(SynthCoLo):
+        engine = "omnivoice"
+        device = "mps:0"
+
+    backend = _backend(RuntimeSynth())
+
+    assert backend.engine == "omnivoice"
+    assert backend.device == "mps:0"
+
+
+def test_vo_boc_phoi_ra_mps_batch_safety():
+    class UnsafeSynth(SynthCoLo):
+        mps_batch_safe = False
+
+    assert _backend(UnsafeSynth()).mps_batch_safe is False
 
 
 def test_vo_boc_bao_0_khi_nha_cung_cap_khong_gop_lo_duoc():
@@ -113,7 +130,7 @@ def test_vo_boc_phoi_ra_stt_batch_size():
 
 
 def test_vo_boc_bao_0_khi_nhan_dien_khong_gop_lo_duoc():
-    """Gemini không có stt_batch_size — phải trả 0, không được nổ AttributeError."""
+    """Provider không có stt_batch_size — phải trả 0, không được nổ AttributeError."""
     b = CompositeBackend(recognizer=NhanDienKhongLo(), translator=None, synthesizer=None)
     assert b.stt_batch_size == 0
 

@@ -1,4 +1,4 @@
-"""Danh sách giọng đọc + tạo/xóa giọng nhân bản từ audio mẫu (chỉ VieNeu)."""
+"""Danh sách giọng đọc + tạo/xóa giọng nhân bản từ audio mẫu (OmniVoice)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import threading
 
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 
 from backend.config import settings
 from pipeline import custom_voices
@@ -19,18 +20,30 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _preview_path(voice_id: str):
+    """Return only a safe preview filename for a known voice id."""
+    if not custom_voices.is_custom(voice_id) and not any(
+        voice.id == voice_id
+        for voice in available_voices(settings.tts_provider, settings.resolved_clone_provider)
+    ):
+        raise HTTPException(404, "Không tìm thấy giọng đọc này.")
+    return settings.previews_dir / f"{voice_id}.wav"
+
+
 def _clone_synthesizer():
-    """Engine đọc giọng nhân bản đang cấu hình (OmniVoice hoặc VieNeu)."""
+    """Engine OmniVoice đọc giọng nhân bản."""
     if settings.resolved_clone_provider == "omnivoice":
         from pipeline.omnivoice_speech import OmniVoiceSynthesizer
 
-        return OmniVoiceSynthesizer(whisper_model=settings.whisper_model,
-                                    whisper_compute_type=settings.whisper_compute_type)
-    from pipeline.vieneu_speech import VieNeuSynthesizer
+        return OmniVoiceSynthesizer(
+            whisper_model=settings.whisper_model,
+            whisper_compute_type=settings.whisper_compute_type,
+            num_step=settings.omnivoice_num_step,
+            batch_size=settings.omnivoice_batch_size,
+        )
+    raise RuntimeError("OmniVoice chưa được cài để xử lý giọng nhân bản")
 
-    return VieNeuSynthesizer(watermark=settings.vieneu_watermark)
-
-# Audio mẫu: VieNeu tự cắt về ≤8 giây, nhưng nhận vào 12 giây cho thoải mái.
+# Audio mẫu: giữ tối đa 12 giây cho OmniVoice.
 _SAMPLE_MAX_SECONDS = 12.0
 _SAMPLE_MIN_SECONDS = 2.0
 _SAMPLE_MAX_UPLOAD = 30 * 1024 * 1024
@@ -44,7 +57,7 @@ def list_voices() -> list[dict]:
     """Kèm `preview_url` khi đã có file nghe thử; chưa có thì để rỗng, giao diện tự ẩn nút."""
     result = []
     for voice in available_voices(settings.tts_provider, settings.resolved_clone_provider):
-        preview = settings.previews_dir / f"{voice.id}.wav"
+        preview = _preview_path(voice.id)
         result.append({
             "id": voice.id,
             "display_name": voice.display_name,
@@ -54,9 +67,18 @@ def list_voices() -> list[dict]:
     return result
 
 
+@router.get("/api/voices/{voice_id}/preview")
+def preview_voice(voice_id: str) -> FileResponse:
+    """Serve an explicitly known voice preview for the Voice Lab player."""
+    path = _preview_path(voice_id)
+    if not path.is_file():
+        raise HTTPException(404, "Giọng này chưa có file demo.")
+    return FileResponse(path, media_type="audio/wav", filename=f"{voice_id}.wav")
+
+
 @router.get("/api/voices/cloning")
 def cloning_status() -> dict:
-    """Nhân bản bật khi có engine clone (OmniVoice hoặc VieNeu) — không phụ thuộc giọng dựng sẵn."""
+    """Nhân bản bật khi OmniVoice được cài — không phụ thuộc giọng dựng sẵn."""
     return {"enabled": settings.resolved_clone_provider is not None}
 
 
@@ -83,8 +105,10 @@ async def create_custom_voice(name: str = Form(...), audio: UploadFile = File(..
     threading.Thread(target=_generate_preview, args=(voice_id,), daemon=True,
                      name=f"preview-{voice_id}").start()
 
+    preview = _preview_path(voice.id)
     return {"id": voice.id, "display_name": f"{voice.display_name} — giọng nhân bản",
-            "preview_url": "", "custom": True}
+            "preview_url": f"/previews/{voice.id}.wav" if preview.is_file() else "",
+            "custom": True}
 
 
 def _normalize_sample(raw: bytes, voice_id: str) -> None:
@@ -108,7 +132,8 @@ def _generate_preview(voice_id: str) -> None:
 
     try:
         pcm = _clone_synthesizer().synthesize(_PREVIEW_TEXT, voice_id)
-        write_wav(settings.previews_dir / f"{voice_id}.wav", pcm_to_array(pcm))
+        preview = _preview_path(voice_id)
+        write_wav(preview, pcm_to_array(pcm))
         log.info("Đã tạo file nghe thử cho giọng nhân bản %s", voice_id)
     except Exception as exc:  # thiếu nghe thử không phải lỗi chết người
         log.warning("Không tạo được nghe thử cho %s: %s", voice_id, exc)
@@ -120,13 +145,10 @@ def delete_custom_voice(voice_id: str) -> dict:
         raise HTTPException(404, "Không tìm thấy giọng nhân bản này.")
 
     custom_voices.remove(voice_id)
-    (settings.previews_dir / f"{voice_id}.wav").unlink(missing_ok=True)
+    _preview_path(voice_id).unlink(missing_ok=True)
 
-    # Bảo mọi engine clone quên giọng: VieNeu giữ embedding trong RAM, OmniVoice giữ ref_text
-    # trong file sidecar. Gọi cả hai để id không trỏ vào dữ liệu cũ dù đang cấu hình engine nào.
+    # Bảo OmniVoice quên ref_text đã cache và sidecar của giọng.
     from pipeline.omnivoice_speech import forget_clone as omnivoice_forget
-    from pipeline.vieneu_speech import forget_clone as vieneu_forget
 
-    vieneu_forget(voice_id)
     omnivoice_forget(voice_id)
     return {"deleted": voice_id}

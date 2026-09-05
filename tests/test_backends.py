@@ -59,7 +59,7 @@ def test_free_stack_uses_whisper_and_edge(monkeypatch):
     built = {}
 
     class _FakeWhisper:
-        def __init__(self, model, compute):
+        def __init__(self, model, compute, **kwargs):
             built["whisper"] = model
 
     class _FakeEdge:
@@ -81,7 +81,7 @@ def test_gemini_stack_shares_one_runner_across_all_three_steps():
 
 
 def test_translation_always_goes_to_gemini_even_on_the_free_stack(monkeypatch):
-    monkeypatch.setattr("pipeline.whisper_stt.WhisperTranscriber", lambda *a: object())
-    monkeypatch.setattr("pipeline.edge_speech.EdgeSynthesizer", lambda *a: object())
+    monkeypatch.setattr("pipeline.whisper_stt.WhisperTranscriber", lambda *a, **kw: object())
+    monkeypatch.setattr("pipeline.edge_speech.EdgeSynthesizer", lambda *a, **kw: object())
     backend = build_backend(FREE)
     assert isinstance(backend._translator, LazyGemini)

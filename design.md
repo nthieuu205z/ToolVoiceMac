@@ -31,7 +31,7 @@ Toàn bộ chữ trên giao diện là **tiếng Việt**.
   người dùng thêm video khác được ngay.
 
 ### 2. Model chạy trên máy (0–2 thẻ, tùy cấu hình server)
-- `GET /api/model` trả danh sách model cần có (Whisper nhận diện, VieNeu giọng đọc).
+- `GET /api/model` trả danh sách model cần có (Whisper nhận diện, OmniVoice giọng nhân bản).
 - Mỗi model một thẻ: tên, trạng thái (sẵn sàng / chưa tải / đang tải / lỗi), dung lượng.
 - Model chưa có: nút **"Tải model"** → `POST /api/model/download?key=<key>` rồi theo dõi
   tiến trình qua SSE `GET /api/model/events` (mỗi event là `{"models":[…]}`; stream tự

@@ -11,9 +11,9 @@ from fastapi.testclient import TestClient
 
 from backend.config import settings
 from backend.main import app
-from pipeline import custom_voices, vieneu_speech
+from pipeline import custom_voices
 from pipeline.audio import write_wav
-from pipeline.vieneu_speech import VieNeuSynthesizer
+from pipeline.omnivoice_speech import OmniVoiceSynthesizer
 from pipeline.voices import is_valid, native_id, voices_for
 
 
@@ -35,6 +35,13 @@ def test_a_registered_voice_appears_in_the_store():
     voice = _seed()
     assert custom_voices.get(voice.id).display_name == "Giọng Của Tôi"
     assert custom_voices.is_custom(voice.id)
+
+
+def test_register_requires_a_safe_id_and_existing_sample():
+    with pytest.raises(ValueError):
+        custom_voices.register("clone-../escape", "Bad")
+    with pytest.raises(FileNotFoundError):
+        custom_voices.register("clone-missing", "Missing")
 
 
 def test_a_voice_without_its_sample_file_does_not_exist():
@@ -59,84 +66,30 @@ def test_duplicate_names_get_distinct_ids():
 
 # ─── hòa vào danh sách giọng ───
 
-def test_clones_show_up_only_on_the_vieneu_provider():
+def test_clones_show_up_only_on_the_omnivoice_provider():
     voice = _seed()
-    assert any(v.id == voice.id for v in voices_for("vieneu"))
+    assert any(v.id == voice.id for v in voices_for("omnivoice"))
     assert not any(v.id == voice.id for v in voices_for("edge"))
 
 
 def test_a_clone_id_passes_job_validation():
     """create_job chặn giọng lạ bằng is_valid — giọng nhân bản phải qua được cửa này."""
     voice = _seed()
-    assert is_valid(voice.id, "vieneu") is True
-    assert native_id(voice.id, "vieneu") == voice.id  # id chính là tên engine nhận
+    assert is_valid(voice.id, "omnivoice") is True
+    assert native_id(voice.id, "omnivoice") == voice.id
 
 
 # ─── engine ───
 
-class _CloneEngine:
-    sample_rate = 48_000
-
-    def __init__(self):
-        self.added: list[tuple[str, str]] = []
-        self.removed: list[str] = []
-        self.infer_voices: list[str] = []
-
-    def add_voice(self, name, ref_audio, **kwargs):
-        self.added.append((name, str(ref_audio)))
-
-    def remove_voice(self, name, **kwargs):
-        self.removed.append(name)
-
-    def infer(self, text, *, voice, style, apply_watermark):
-        self.infer_voices.append(voice)
-        return np.zeros(4800, dtype=np.float32)
-
-    def get_preset_voice(self, voice):
-        raise KeyError(voice)  # giọng nhân bản không có trong preset — phải không nổ
-
-
-@pytest.fixture
-def clone_engine(monkeypatch):
-    engine = _CloneEngine()
-    monkeypatch.setattr(vieneu_speech, "_get_engine", lambda: engine)
-    monkeypatch.setattr(vieneu_speech, "_registered_clones", set())
-    monkeypatch.setattr(vieneu_speech, "_engine", engine)
-    return engine
-
-
-def test_the_engine_learns_a_clone_once_then_reuses_it(clone_engine):
-    voice = _seed()
-    synth = VieNeuSynthesizer()
-    synth.synthesize("câu một", voice.id)
-    synth.synthesize("câu hai", voice.id)
-
-    assert len(clone_engine.added) == 1               # add_voice tốn vài giây — chỉ một lần
-    assert clone_engine.added[0][0] == voice.id
-    assert voice.id in clone_engine.added[0][1]        # học từ đúng file mẫu
-    assert clone_engine.infer_voices == [voice.id, voice.id]
-
-
-def test_preset_voices_never_trigger_registration(clone_engine):
-    VieNeuSynthesizer().synthesize("chào", "truc-ly")
-    assert clone_engine.added == []
-
-
-def test_forgetting_a_clone_lets_a_new_registration_happen(clone_engine):
-    voice = _seed()
-    VieNeuSynthesizer().synthesize("một", voice.id)
-    vieneu_speech.forget_clone(voice.id)
-
-    assert clone_engine.removed == [voice.id]
-    VieNeuSynthesizer().synthesize("hai", voice.id)
-    assert len(clone_engine.added) == 2  # sau khi quên thì học lại từ file
+def test_omnivoice_is_the_only_clone_implementation():
+    assert OmniVoiceSynthesizer.__module__ == "pipeline.omnivoice_speech"
 
 
 # ─── API ───
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setattr(settings, "tts_provider", "vieneu")
+    monkeypatch.setattr(settings, "tts_provider", "edge")
     # Không nạp engine thật trong test: chặn luồng tạo nghe thử và bước decode ffmpeg.
     monkeypatch.setattr("backend.routes.voices._generate_preview", lambda vid: None)
     monkeypatch.setattr("backend.routes.voices.decode_to_pcm",
@@ -151,13 +104,22 @@ def _upload(client, name="Giọng Test"):
 
 
 def test_cloning_enabled_whenever_a_clone_engine_exists(client, monkeypatch):
-    # Có engine clone (mặc định omnivoice, hoặc lùi về vieneu) → bật, KỂ CẢ khi preset là edge.
+    # Có OmniVoice → bật, kể cả khi preset là edge.
     assert client.get("/api/voices/cloning").json() == {"enabled": True}
     monkeypatch.setattr(settings, "tts_provider", "edge")
     assert client.get("/api/voices/cloning").json() == {"enabled": True}
     # Tắt hẳn nhân bản.
     monkeypatch.setattr(settings, "clone_tts_provider", "none")
     assert client.get("/api/voices/cloning").json() == {"enabled": False}
+
+
+def test_clone_upload_does_not_depend_on_preset_provider(client, monkeypatch):
+    monkeypatch.setattr(settings, "tts_provider", "gemini")
+
+    response = _upload(client)
+
+    assert response.status_code == 200
+    assert response.json()["custom"] is True
 
 
 def test_uploading_a_sample_creates_a_selectable_voice(client):

@@ -24,16 +24,13 @@ class Settings(BaseSettings):
     # Cùng một khóa nhưng hai endpoint; project nào bật API nào thì dùng cái đó.
     gemini_backend: str = "developer"
 
-    # Nhà cung cấp cho từng bước. Mặc định né hẳn trần 100 lượt/ngày của Gemini TTS.
+    # Nhà cung cấp cho từng bước.
     stt_provider: str = "whisper"   # whisper (miễn phí, chạy trên máy) | gemini
-    tts_provider: str = "edge"      # edge | vieneu (offline) | omnivoice (nhân bản, offline) | gemini
+    tts_provider: str = "edge"      # edge (cần mạng) | gemini
     # Bước dịch luôn dùng Gemini — chỉ tốn 1–4 lượt gọi cho cả video.
 
-    # Engine đọc giọng NHÂN BẢN, định tuyến RIÊNG khỏi giọng dựng sẵn (xem pipeline/voices.py
-    # ::route_provider). Chọn giọng nhân bản → dùng engine này; chọn giọng dựng sẵn → tts_provider.
-    #   omnivoice  nhân bản zero-shot chất lượng cao (CC-BY-NC, cần cài + tải model ~3,3 GB);
-    #              TỰ LÙI về vieneu nếu chưa cài OmniVoice.
-    #   vieneu     nhân bản bằng chính engine VieNeu (hành vi cũ).
+    # Engine đọc giọng NHÂN BẢN, định tuyến riêng khỏi giọng dựng sẵn.
+    #   omnivoice  nhân bản zero-shot chất lượng cao (CC-BY-NC, cần cài + tải model ~3,3 GB).
     #   none       tắt tính năng nhân bản.
     clone_tts_provider: str = "omnivoice"
 
@@ -45,24 +42,19 @@ class Settings(BaseSettings):
     # Whisper chạy trên máy: tiny | base | small | medium | large-v3 (càng lớn càng chậm, càng chuẩn)
     whisper_model: str = "small"
     whisper_compute_type: str = "int8"
+    # faster-whisper không có backend MPS; trên Apple Silicon vẫn gộp feature chunks trên CPU.
+    # 0 = đường từng vùng, 8 = mức đã đo nhanh hơn rõ rệt trên M1 Max 64 GB.
+    whisper_cpu_batch_size: int = 8
 
     # edge-tts bóp tần suất — thử lại là bắt buộc.
     edge_tts_attempts: int = 5
 
-    # VieNeu mặc định nhúng dấu chìm vào audio; ta tắt, bật lại nếu bạn muốn.
-    vieneu_watermark: bool = False
 
     # OmniVoice (engine giọng nhân bản). num_step = số bước sinh: 32 mặc định (chất lượng),
-    # hạ 16–24 để nhanh hơn (đo: 16≈3,5s vs 32≈6,2s/câu). batch_size 0 = tự suy từ VRAM,
-    # cạp ở knee đo được (~8) — OmniVoice nghẽn sức tính, lô to hơn không nhanh thêm.
+    # hạ 16–24 để nhanh hơn. batch_size 0 = tự suy từ VRAM, cạp ở knee khoảng 8.
     omnivoice_num_step: int = 32
     omnivoice_batch_size: int = 0
 
-    # Số lượt thoại VieNeu gộp vào MỘT lượt gọi GPU. 0 = tự chọn theo dung lượng card.
-    # Đây là đòn bẩy hiệu năng lớn nhất của cả pipeline (từng câu một: 2,3 lần thời gian
-    # thực; gộp 32 câu: ~44 lần) — lý do và số đo nằm ở pipeline/vieneu_batch.py.
-    # Không ảnh hưởng gì tới đường CPU/ONNX, vốn luôn đọc từng câu một.
-    vieneu_batch_size: int = 0
 
     # ffmpeg: để trống thì tìm trong PATH.
     ffmpeg_bin: str = ""
@@ -73,8 +65,8 @@ class Settings(BaseSettings):
     max_utterance_seconds: float = 12.0
     max_utterance_gap: float = 0.5
     # Dùng mốc thời gian cấp CÂU của Whisper: mỗi câu là một lượt đọc đặt đúng thời điểm câu
-    # tiếng Anh, thay vì nhồi cả vùng ffmpeg (2–4 câu) làm một khối. Bám hình sát hơn, VieNeu
-    # ổn định hơn (đọc từng câu), hết cảnh "Hôm ...(nghỉ)... nay". Đặt False để về cấp vùng.
+    # tiếng Anh, thay vì nhồi cả vùng ffmpeg (2–4 câu) làm một khối. Bám hình sát hơn,
+    # hết cảnh "Hôm ...(nghỉ)... nay". Đặt False để về cấp vùng.
     sentence_level_timing: bool = True
     # Gemini STT chịu được nhiều luồng song song (đặt 8 trong .env); Whisper thì
     # tự tuần tự hóa bên trong nên chạy whisper hãy hạ về 1 cho khỏi tranh CPU.
@@ -90,7 +82,7 @@ class Settings(BaseSettings):
     # tự tan ở khoảng lặng kế tiếp (xem pipeline/audio.py::fit_to_window). Nới lên nếu
     # muốn dub bám hình chặt hơn, hạ xuống nếu muốn giọng êm hơn nữa.
     tts_max_speedup: float = 1.3
-    # Sàn kéo-CHẬM để lấp khung khi tiếng Việt đọc xong sớm hơn hình (VieNeu đọc ~1,6×
+    # Sàn kéo-CHẬM để lấp khung khi tiếng Việt xong sớm hơn hình
     # nhanh hơn giọng Anh). 0,9× kéo dài thêm tối đa ~11% — dưới ngưỡng tai — để bám hình
     # thay vì để im lặng cụt lủn. Đặt 1,0 để tắt (giữ hành vi cũ "không bao giờ kéo chậm").
     # Chỉ áp cho câu NGẮN hơn khung; câu dài vẫn tăng tốc như thường.
@@ -98,10 +90,23 @@ class Settings(BaseSettings):
     tts_daily_budget: int = 90
     max_upload_mb: int = 8192
 
-    # Số video xử lý đồng thời. Đặt thấp có chủ ý: Whisper/VieNeu bị khóa suy luận
+    # Số video xử lý đồng thời. Đặt thấp có chủ ý: Whisper/OmniVoice bị khóa suy luận
     # toàn cục và edge-tts bị trần 2 request đồng thời — job thứ ba chủ yếu chen hàng
     # chứ không nhanh thêm. Video vượt trần sẽ xếp hàng chờ, không bị từ chối.
     max_concurrent_jobs: int = 2
+
+    def validate_providers(self) -> None:
+        """Reject unsupported configuration before a job can be misrouted."""
+        stt = (self.stt_provider or "").strip().lower()
+        tts = (self.tts_provider or "").strip().lower()
+        clone = (self.clone_tts_provider or "").strip().lower()
+        if stt not in {"whisper", "gemini"}:
+            raise ValueError(f"Nhà cung cấp STT không hợp lệ: {self.stt_provider}")
+        if tts not in {"edge", "gemini"}:
+            raise ValueError(f"Nhà cung cấp preset không hợp lệ: {self.tts_provider}")
+        if clone not in {"", "none", "omnivoice"}:
+            raise ValueError(f"Nhà cung cấp clone không hợp lệ: {self.clone_tts_provider}")
+
 
     @property
     def provider_config(self):
@@ -121,19 +126,15 @@ class Settings(BaseSettings):
             gemini_tts_model=self.gemini_tts_model,
             whisper_model=self.whisper_model,
             whisper_compute_type=self.whisper_compute_type,
+            whisper_cpu_batch_size=self.whisper_cpu_batch_size,
             edge_tts_attempts=self.edge_tts_attempts,
-            vieneu_watermark=self.vieneu_watermark,
             omnivoice_num_step=self.omnivoice_num_step,
             omnivoice_batch_size=self.omnivoice_batch_size,
         )
 
     @property
     def resolved_clone_provider(self) -> str | None:
-        """Engine nhân bản thực tế, đã tính việc OmniVoice có cài hay chưa.
-
-        '' / 'none' = tắt nhân bản (trả None). 'omnivoice' tự lùi về 'vieneu' nếu chưa cài
-        gói omnivoice — nhờ vậy đặt mặc định omnivoice mà máy chưa cài thì KHÔNG hỏng.
-        """
+        """Engine nhân bản thực tế: OmniVoice hoặc tắt."""
         choice = (self.clone_tts_provider or "").strip().lower()
         if choice in ("", "none"):
             return None
@@ -141,23 +142,18 @@ class Settings(BaseSettings):
             import importlib.util
 
             if importlib.util.find_spec("omnivoice") is None:
-                return "vieneu"
-        return choice
+                return None
+        return "omnivoice" if choice == "omnivoice" else None
 
     @property
     def model_specs(self) -> list:
         """Các model cần tải về máy, theo nhà cung cấp đang cấu hình."""
-        from pipeline.model_store import omnivoice_spec, vieneu_spec, whisper_spec
+        from pipeline.model_store import omnivoice_spec, whisper_spec
 
         specs = []
         if self.stt_provider == "whisper":
             specs.append(whisper_spec(self.whisper_model))
         clone = self.resolved_clone_provider
-        # VieNeu cần tải khi là giọng đọc DỰNG SẴN hoặc là engine NHÂN BẢN — kể cả khi
-        # CLONE_TTS_PROVIDER=omnivoice tự lùi về vieneu vì chưa cài gói omnivoice. Nếu không
-        # liệt kê, job nhân bản đầu tải ngầm ~610 MB giữa chừng, không có thanh tiến trình.
-        if self.tts_provider == "vieneu" or clone == "vieneu":
-            specs.append(vieneu_spec())
         if clone == "omnivoice":
             specs.append(omnivoice_spec())
         return specs

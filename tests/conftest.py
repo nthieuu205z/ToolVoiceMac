@@ -22,7 +22,7 @@ def sine_pcm_with_hole(pre: float = 1.0, hole: float = 2.5, post: float = 1.0,
                        rate: int = TTS_SAMPLE_RATE) -> bytes:
     """PCM có tiếng — khoảng lặng dài bất thường ở GIỮA — rồi lại tiếng.
 
-    Mô phỏng đúng "lá bài xấu" của VieNeu: một lượt đọc dài bình thường nhưng có lỗ
+    Mô phỏng đúng "lá bài xấu" của TTS: một lượt đọc dài bình thường nhưng có lỗ
     hổng im lặng ~2,5s ở giữa (đo thật: 4,72s ở bản render). Bộ chống chạy hoang cũ mù
     với ca này vì tổng độ dài vẫn hợp lý.
     """

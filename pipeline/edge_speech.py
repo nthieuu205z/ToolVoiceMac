@@ -34,6 +34,9 @@ _request_slots = threading.BoundedSemaphore(2)
 class EdgeSynthesizer:
     """Bám giao thức `synthesize` của pipeline: trả PCM 16-bit mono TTS_SAMPLE_RATE Hz."""
 
+    engine = "edge"
+    device = "network"
+
     def __init__(self, attempts: int = DEFAULT_ATTEMPTS):
         self._attempts = max(1, attempts)
 

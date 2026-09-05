@@ -10,7 +10,8 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.job_manager import manager
-from backend.routes import jobs, model, voices
+from backend.routes import jobs, model, settings as settings_routes, voices
+from backend.process_control import schedule_shutdown
 from pipeline import custom_voices
 from pipeline.ffmpeg_utils import set_binaries
 
@@ -20,17 +21,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Nằm trong lifespan chứ KHÔNG ở cấp import: test import app hàng chục lần,
-    # không được phép mỗi lần lại nạp thật 609 MB engine vào RAM.
+    # không được phép mỗi lần lại nạp thật model nặng vào RAM.
+    settings.validate_providers()
     clone = settings.resolved_clone_provider
-    # VieNeu nạp sẵn khi là giọng đọc DỰNG SẴN hoặc là engine NHÂN BẢN — kể cả khi
-    # CLONE_TTS_PROVIDER=omnivoice tự lùi về vieneu vì chưa cài omnivoice. Không thì job
-    # nhân bản đầu phải chờ nạp lạnh ~15–90s.
-    if settings.tts_provider == "vieneu" or clone == "vieneu":
-        from pipeline import vieneu_speech
 
-        vieneu_speech.configure(batch_size=settings.vieneu_batch_size)
-        # VieNeu nạp mất ~15–90 giây lần lạnh — nạp nền từ lúc boot để job đầu khỏi chờ.
-        vieneu_speech.prewarm()
     if settings.stt_provider == "whisper":
         from pipeline import whisper_stt
 
@@ -55,6 +49,14 @@ manager.restore(settings.jobs_dir)
 app.include_router(voices.router)
 app.include_router(model.router)
 app.include_router(jobs.router)
+app.include_router(settings_routes.router)
+
+
+@app.post("/api/shutdown")
+def shutdown_tool() -> dict:
+    """Schedule a scoped process-tree shutdown after returning the acknowledgement."""
+    schedule_shutdown()
+    return {"shutting_down": True}
 
 # Mount sau cùng để các route /api/* được khớp trước.
 app.mount("/previews", StaticFiles(directory=settings.previews_dir, check_dir=False), name="previews")

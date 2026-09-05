@@ -159,6 +159,9 @@ _TTS_INSTRUCTION = (
 class GeminiRunner:
     """Bọc google-genai: chuẩn hóa cấu hình, thử lại, và bóc dữ liệu ra kiểu của pipeline."""
 
+    engine = "gemini"
+    device = "cloud"
+
     def __init__(
         self,
         api_key: str,
@@ -184,6 +187,8 @@ class GeminiRunner:
         self._tts_language_code_rejected = False
         # Model nào không nhận thinking_config thì nhớ luôn (dùng chung giữa các luồng STT).
         self._stt_thinking_rejected = False
+        # Dịch JSON theo dòng không cần suy luận dài; nhớ nếu model không nhận trường này.
+        self._translation_thinking_rejected = False
         # Chỉ để báo cáo — không dùng để chặn các lượt sau (xem docstring của synthesize).
         self._quota_exhausted = False
         self._warned_rate: int | None = None
@@ -259,18 +264,32 @@ class GeminiRunner:
 
     @_retry
     def _generate_translation(self, prompt: str) -> types.GenerateContentResponse:
+        thinking_off = not self._translation_thinking_rejected
         try:
-            return self._client.models.generate_content(
-                model=self._translate_model,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.3,
-                    response_mime_type="application/json",
-                    response_schema=_Translation,
-                ),
-            )
+            return self._translation_call(prompt, thinking_off=thinking_off)
         except genai_errors.APIError as exc:
+            if exc.code == 400 and thinking_off:
+                self._translation_thinking_rejected = True
+                log.info("Model dịch từ chối thinking_config — thử lại không kèm trường này")
+                try:
+                    return self._translation_call(prompt, thinking_off=False)
+                except genai_errors.APIError as retry_exc:
+                    raise self._wrap(retry_exc, "dịch lời thoại")
             raise self._wrap(exc, "dịch lời thoại")
+
+    def _translation_call(self, prompt: str, *, thinking_off: bool):
+        config_kwargs: dict = {
+            "temperature": 0.3,
+            "response_mime_type": "application/json",
+            "response_schema": _Translation,
+        }
+        if thinking_off:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        return self._client.models.generate_content(
+            model=self._translate_model,
+            contents=prompt,
+            config=types.GenerateContentConfig(**config_kwargs),
+        )
 
     # ─── tạo giọng đọc ──────────────────────────────────────────────
 

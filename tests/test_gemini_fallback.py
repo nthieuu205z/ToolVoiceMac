@@ -246,6 +246,15 @@ class _TranscriptResponse:
         self.text = ""
 
 
+class _TranslationResponse:
+    def __init__(self):
+        from pipeline.gemini import _TranslatedLine, _Translation
+
+        self.parsed = _Translation(lines=[_TranslatedLine(index=0, text_vi="xin chào")])
+        self.candidates = []
+        self.text = ""
+
+
 def test_transcription_disables_thinking_by_default(runner, tmp_path):
     """Đo trên gemini-3.5-flash qua Vertex: 4,2–18,9s/request mặc định → 2,3s khi tắt."""
     seen = []
@@ -261,6 +270,40 @@ def test_transcription_disables_thinking_by_default(runner, tmp_path):
 
     assert runner.transcribe_clip(clip) == ("en", "hello")
     assert seen[0] is not None and seen[0].thinking_budget == 0
+
+
+def test_translation_disables_thinking_by_default(runner):
+    seen = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            seen.append(config.thinking_config)
+            return _TranslationResponse()
+
+    runner._client = _Client(_Models())
+
+    assert runner.translate(["hello"], [1.0]) == ["xin chào"]
+    assert seen[0] is not None and seen[0].thinking_budget == 0
+
+
+def test_translation_falls_back_when_model_rejects_thinking_config(runner):
+    seen = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            seen.append(config.thinking_config)
+            if config.thinking_config is not None:
+                raise genai_errors.ClientError(
+                    400, {"error": {"message": "thinking is not supported"}}
+                )
+            return _TranslationResponse()
+
+    runner._client = _Client(_Models())
+
+    assert runner.translate(["hello"], [1.0]) == ["xin chào"]
+    assert seen[0] is not None
+    assert seen[1] is None
+    assert runner._translation_thinking_rejected is True
 
 
 def test_a_model_that_rejects_thinking_config_falls_back_and_remembers(runner, tmp_path):

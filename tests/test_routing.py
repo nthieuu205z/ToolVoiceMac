@@ -26,17 +26,22 @@ def test_clone_voice_routes_to_clone_engine():
 
 
 def test_preset_voice_routes_to_tts_provider():
-    assert route_provider("truc-ly", tts_provider="vieneu", clone_provider="omnivoice") == "vieneu"
     assert route_provider("vi-VN-HoaiMyNeural", tts_provider="edge", clone_provider="omnivoice") == "edge"
+    assert route_provider("Charon", tts_provider="gemini", clone_provider="omnivoice") == "gemini"
 
 
-def test_clone_voice_can_route_to_vieneu():
-    assert route_provider("clone-abc", tts_provider="edge", clone_provider="vieneu") == "vieneu"
+def test_clone_voice_always_routes_to_omnivoice():
+    assert route_provider("clone-abc", tts_provider="edge", clone_provider="omnivoice") == "omnivoice"
 
 
 def test_clone_voice_without_clone_engine_falls_back_to_tts_provider():
-    # Không có engine clone -> đành trả tts_provider (không có đường nào khác).
+    # Khi clone tắt, caller sẽ từ chối custom voice; hàm vẫn giữ provider preset cho tương thích.
     assert route_provider("clone-abc", tts_provider="edge", clone_provider=None) == "edge"
+
+
+def test_unknown_provider_is_rejected_instead_of_misrouting():
+    with pytest.raises(ValueError):
+        route_provider("Charon", tts_provider="legacy", clone_provider="omnivoice")
 
 
 # ── available_voices / is_available ──────────────────────────────────────────

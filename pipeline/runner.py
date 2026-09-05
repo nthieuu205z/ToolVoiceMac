@@ -47,12 +47,11 @@ class PipelineOptions:
     # giữ hành vi cũ cho CLI/test); backend web truyền settings.tts_fill_slowdown (0,9).
     tts_fill_slowdown: float = 1.0
     # Bản miễn phí cho khoảng 100 lượt TTS mỗi ngày; cảnh báo sớm khi sắp chạm trần.
-    # Chỉ có nghĩa với Gemini TTS — VieNeu/edge chạy không giới hạn nên tts_is_metered=False.
+    # Chỉ có nghĩa với Gemini TTS; provider local/edge không tính theo lượt.
     tts_daily_budget: int = 90
     tts_is_metered: bool = False
-    # Engine có KHUYẾT TẬT ngẫu nhiên chèn lỗ hổng im lặng giữa câu (VieNeu, edge) → bật đọc
-    # lại lượt xấu. OmniVoice KHÔNG cần: nó tự vá bằng postprocess, và mỗi lần đọc lại là một
-    # single-synth ~5,8s (không gộp lô) — rất đắt ở video dài. Đặt False cho OmniVoice.
+    # Engine có thể chèn lỗ hổng im lặng giữa câu; OmniVoice tự xử lý bằng postprocess
+    # nên route OmniVoice thường truyền False.
     resynthesize_holes: bool = True
 
 
@@ -130,6 +129,7 @@ def run_pipeline(
 
     # 4. Tạo giọng đọc
     attempted = sum(1 for seg in segments if seg.text_vi.strip())
+    progress("synthesize", 0.0, "Đang khởi tạo engine giọng đọc")
     if options.tts_is_metered and attempted > options.tts_daily_budget:
         warnings.append(
             f"Video này cần khoảng {attempted} lượt gọi Gemini TTS, vượt hạn mức miễn phí "
@@ -141,9 +141,7 @@ def run_pipeline(
         workers=options.tts_workers,
         max_speedup=options.tts_max_speedup,
         total_duration=media.duration,
-        # Đọc lại lượt có lỗ hổng im lặng bất thường — chỉ với backend local (miễn phí) VÀ có
-        # khuyết tật đó (VieNeu/edge). Gemini tính tiền theo lượt; OmniVoice tự vá (postprocess)
-        # nên resynthesize_holes=False để khỏi tốn single-synth đắt ở video dài.
+        # Gemini tính tiền theo lượt; OmniVoice tự xử lý hậu kỳ nên thường tắt đọc lại.
         resynthesize_bad=(not options.tts_is_metered) and options.resynthesize_holes,
         fill_slowdown=options.tts_fill_slowdown,
         progress=progress,

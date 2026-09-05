@@ -1,4 +1,4 @@
-"""Tải các model chạy trên máy (Whisper, VieNeu) thủ công và theo dõi tiến trình."""
+"""Tải model chạy trên máy (Whisper, OmniVoice) thủ công và theo dõi tiến trình."""
 
 from __future__ import annotations
 

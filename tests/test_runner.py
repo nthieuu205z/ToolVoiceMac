@@ -1,8 +1,4 @@
-"""Cảnh báo hạn mức TTS chỉ dành cho nhà cung cấp có trần theo ngày (Gemini).
-
-VieNeu/edge chạy không giới hạn — video dài trăm câu mà vẫn dọa "vượt hạn mức
-miễn phí" là báo sai, người dùng sẽ tưởng kết quả bị bỏ trống.
-"""
+"""Cảnh báo hạn mức TTS chỉ dành cho nhà cung cấp có trần theo ngày (Gemini)."""
 
 from __future__ import annotations
 
@@ -47,7 +43,7 @@ def test_gemini_tts_over_budget_warns(stub_stages):
 
 
 def test_local_tts_never_warns_about_gemini_quota(stub_stages):
-    """VieNeu vượt 'budget' thoải mái — trần đó không phải của nó."""
+    """TTS local vượt 'budget' thoải mái — trần đó không phải của nó."""
     result = run_pipeline(None, stub_stages / "in.mp4", stub_stages,
                           _options(metered=False), media=MEDIA)
     assert result.warnings == []
@@ -84,8 +80,8 @@ def test_omnivoice_skips_the_costly_resynthesis(stub_stages, monkeypatch):
     assert seen["flag"] is False
 
 
-def test_vieneu_and_edge_still_resynthesize(stub_stages, monkeypatch):
-    """Khuyết tật lỗ hổng im lặng là có thật ở VieNeu — không được tắt nhầm của chúng."""
+def test_local_and_edge_still_resynthesize(stub_stages, monkeypatch):
+    """Kiểm tra cờ đọc lại của provider local miễn phí."""
     seen = _capture_resynthesize(monkeypatch)
     _run(stub_stages, PipelineOptions(voice_id="v"))
     assert seen["flag"] is True
@@ -101,3 +97,20 @@ def test_metered_backend_never_resynthesizes(stub_stages, monkeypatch):
 def test_resynthesis_is_on_by_default():
     """Route/CLI quên truyền cờ thì giữ hành vi cũ (đọc lại), không im lặng đổi chất lượng."""
     assert PipelineOptions(voice_id="v").resynthesize_holes is True
+
+
+def test_runner_announces_synthesis_before_engine_initialization(stub_stages, monkeypatch):
+    events = []
+
+    monkeypatch.setattr(runner, "synthesize_segments", lambda *args, **kwargs: ([], []))
+    monkeypatch.setattr(runner, "run_mux", lambda video, audio, dest: dest)
+    run_pipeline(
+        None,
+        stub_stages / "in.mp4",
+        stub_stages,
+        PipelineOptions(voice_id="v"),
+        progress=lambda stage, fraction, message: events.append((stage, fraction, message)),
+        media=MEDIA,
+    )
+
+    assert ("synthesize", 0.0, "Đang khởi tạo engine giọng đọc") in events

@@ -205,7 +205,7 @@ def longest_internal_silence(samples: np.ndarray, rate: int = TTS_SAMPLE_RATE,
                              frame: float = 0.02, thresh_frac: float = 0.06) -> float:
     """Khoảng lặng dài nhất NẰM GIỮA phần có tiếng — bỏ qua im lặng đầu/cuối.
 
-    VieNeu là model tự hồi quy có yếu tố ngẫu nhiên: ~1–2% lượt đọc rút phải "lá bài xấu"
+    TTS là model tự hồi quy có yếu tố ngẫu nhiên: ~1–2% lượt đọc rút phải "lá bài xấu"
     và chèn một khoảng lặng dài bất thường vào giữa câu (đo thật: lỗ 4,72s), nghe như
     "ngắt đột ngột". Bộ chống chạy hoang không thấy được vì tổng độ dài vẫn hợp lý — cần
     đo riêng lỗ hổng bên trong. Ngưỡng năng lượng thích nghi theo chính đoạn audio nên

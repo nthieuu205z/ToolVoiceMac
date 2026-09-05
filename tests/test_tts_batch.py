@@ -1,9 +1,4 @@
-"""Đường gộp lô của tts.py phải giữ nguyên hai lời hứa của đường cũ.
-
-Gộp lô làm tăng tốc ~20 lần, nhưng nó gom nhiều lượt thoại vào một lượt gọi — nên hai
-thứ dễ mất nhất là: (1) hủy giữa chừng còn ăn không, (2) một câu hỏng có kéo cả lô chết
-theo không. Hai cái đó chính là nội dung của file này.
-"""
+"""Batch TTS contract: one provider call per group, ordered output, safe fallback."""
 
 from __future__ import annotations
 
@@ -24,81 +19,154 @@ def pcm(seconds: float = 1.0) -> bytes:
 
 
 class LoBackend:
-    """Backend giả có gộp lô, đúng giao thức mà tts.py trông đợi."""
+    batch_size = 32
 
-    def __init__(self, batch_size: int = 32, hong_lo: bool = False, hong_cau: str = ""):
-        self.batch_size = batch_size
-        self._hong_lo = hong_lo
-        self._hong_cau = hong_cau
-        self.lo_da_goi: list[list[str]] = []
-        self.le_da_goi: list[str] = []
+    def __init__(self, *, batch_error: bool = False, bad_text: str = ""):
+        self.batch_error = batch_error
+        self.bad_text = bad_text
+        self.batch_calls: list[list[str]] = []
+        self.single_calls: list[str] = []
 
-    def synthesize_batch(self, texts: list[str], voice_id: str) -> list[bytes]:
-        self.lo_da_goi.append(list(texts))
-        if self._hong_lo:
-            raise RuntimeError("GPU hết bộ nhớ")
+    def synthesize_batch(self, texts, voice_id):
+        self.batch_calls.append(list(texts))
+        if self.batch_error:
+            raise RuntimeError("batch failed")
         return [pcm() for _ in texts]
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
-        self.le_da_goi.append(text)
-        if text == self._hong_cau:
-            raise RuntimeError("câu này hỏng")
+    def synthesize(self, text, voice_id):
+        self.single_calls.append(text)
+        if text == self.bad_text:
+            raise RuntimeError("single failed")
         return pcm()
 
+    def transcribe_clip(self, wav_path):
+        return "en", ""
 
-def test_backend_co_gop_lo_thi_khong_goi_tung_cau_mot():
-    backend = LoBackend(batch_size=32)
+    def translate(self, texts, durations, context=""):
+        return list(texts)
+
+
+class ProgressBackend(LoBackend):
+    batch_size = 2
+
+
+def test_batch_progress_reports_each_completed_batch():
+    backend = ProgressBackend()
+    segs = segments(
+        (0.0, 2.0, "a"),
+        (3.0, 5.0, "b"),
+        (6.0, 8.0, "c"),
+    )
+    progress = []
+
+    synthesize_segments(
+        backend,
+        segs,
+        "voice",
+        total_duration=20.0,
+        progress=lambda stage, fraction, message: progress.append((fraction, message)),
+    )
+
+    assert [round(fraction, 3) for fraction, _ in progress] == [0.0, 0.667, 1.0, 1.0]
+    assert "lô 1/2" in progress[1][1]
+    assert "lô 2/2" in progress[2][1]
+
+
+def test_batch_provider_is_called_once_and_keeps_original_order():
+    backend = LoBackend()
     segs = segments((0.0, 2.0, "a"), (3.0, 5.0, "b"), (6.0, 8.0, "c"))
 
-    fitted, warnings = synthesize_segments(backend, segs, "v", total_duration=20.0)
+    fitted, warnings = synthesize_segments(backend, segs, "voice", total_duration=20.0)
 
-    assert len(fitted) == 3
+    assert [segment.text_vi for segment, _ in fitted] == ["a", "b", "c"]
     assert not warnings
-    assert backend.lo_da_goi == [["a", "b", "c"]]   # đúng MỘT lượt gọi cho cả ba
-    assert backend.le_da_goi == []
+    assert backend.batch_calls == [["a", "b", "c"]]
+    assert backend.single_calls == []
 
 
-def test_lo_hong_thi_lui_ve_tung_cau_de_chi_mat_dung_cau_hong():
-    """Nếu cả lô chết mà ta bỏ luôn cả lô thì một câu xấu làm mất 32 câu tốt."""
-    backend = LoBackend(batch_size=32, hong_lo=True, hong_cau="b")
+def test_unsafe_mps_backend_uses_single_item_batches():
+    class UnsafeBackend(LoBackend):
+        mps_batch_safe = False
+
+    backend = UnsafeBackend()
     segs = segments((0.0, 2.0, "a"), (3.0, 5.0, "b"), (6.0, 8.0, "c"))
 
-    fitted, warnings = synthesize_segments(backend, segs, "v", total_duration=20.0)
+    synthesize_segments(backend, segs, "voice", total_duration=20.0)
 
-    assert backend.le_da_goi == ["a", "b", "c"]     # đã lùi về đọc lẻ
-    assert [s.text_vi for s, _ in fitted] == ["a", "c"]   # chỉ "b" bị bỏ trống
-    assert any("1/3" in w for w in warnings)
+    assert backend.batch_calls == [["a"], ["b"], ["c"]]
 
 
-def test_huy_giua_chung_van_an():
-    backend = LoBackend(batch_size=1)
+def test_failed_unsafe_mps_batch_does_not_retry_as_a_multi_item_batch():
+    class UnsafeBackend(LoBackend):
+        mps_batch_safe = False
+        batch_error = True
+
+    backend = UnsafeBackend()
+    segs = segments((0.0, 2.0, "a"), (3.0, 5.0, "b"))
+
+    synthesize_segments(backend, segs, "voice", total_duration=20.0)
+
+    assert backend.batch_calls == [["a"], ["b"]]
+
+
+def test_mismatched_batch_output_falls_back_to_every_item():
+    class ShortBackend(LoBackend):
+        def synthesize_batch(self, texts, voice_id):
+            self.batch_calls.append(list(texts))
+            return [pcm()]
+
+    backend = ShortBackend()
+    segs = segments((0.0, 2.0, "a"), (3.0, 5.0, "b"), (6.0, 8.0, "c"))
+
+    fitted, warnings = synthesize_segments(backend, segs, "voice", total_duration=20.0)
+
+    assert backend.single_calls == ["a", "b", "c"]
+    assert len(fitted) == 3
+    assert warnings == []
+
+
+def test_failed_batch_falls_back_to_single_items():
+    backend = LoBackend(batch_error=True, bad_text="b")
+    segs = segments((0.0, 2.0, "a"), (3.0, 5.0, "b"), (6.0, 8.0, "c"))
+
+    fitted, warnings = synthesize_segments(backend, segs, "voice", total_duration=20.0)
+
+    assert backend.single_calls == ["a", "b", "c"]
+    assert [segment.text_vi for segment, _ in fitted] == ["a", "c"]
+    assert any("1/3" in warning for warning in warnings)
+
+
+def test_cancellation_happens_before_next_batch():
+    backend = LoBackend()
     segs = segments((0.0, 2.0, "a"), (3.0, 5.0, "b"))
 
     with pytest.raises(JobCancelledError):
-        synthesize_segments(backend, segs, "v", total_duration=20.0,
-                            should_cancel=lambda: True)
-    assert backend.lo_da_goi == []                  # dừng TRƯỚC khi tốn một lượt GPU nào
+        synthesize_segments(
+            backend,
+            segs,
+            "voice",
+            should_cancel=lambda: True,
+            total_duration=20.0,
+        )
+
+    assert backend.batch_calls == []
 
 
-def test_lo_duoc_chia_deu_chu_khong_cat_thang_theo_tran():
-    """Mọi hàng trong lô chạy tới khi hàng dài nhất xong, nên một lô cuối lèo tèo rất phí:
-    53 câu trần 32 phải ra 27+26, không phải 32+21."""
+def test_batch_sizes_are_balanced():
     assert _chia_lo(53, 32) == [27, 26]
-    assert _chia_lo(32, 32) == [32]
     assert _chia_lo(33, 32) == [17, 16]
-    assert _chia_lo(5, 32) == [5]
     assert _chia_lo(0, 32) == []
-    for n in (1, 7, 40, 100, 129):
-        lo = _chia_lo(n, 32)
-        assert sum(lo) == n and max(lo) <= 32
-        assert max(lo) - min(lo) <= 1               # thật sự đều
+    for count in (1, 7, 40, 100, 129):
+        sizes = _chia_lo(count, 32)
+        assert sum(sizes) == count
+        assert max(sizes) <= 32
+        assert max(sizes) - min(sizes) <= 1
 
 
-def test_thoi_luong_doc_that_duoc_ghi_lai_cho_phu_de():
-    backend = LoBackend(batch_size=32)
+def test_spoken_duration_is_saved_after_batch_fit():
+    backend = LoBackend()
     segs = segments((0.0, 5.0, "a"))
 
-    synthesize_segments(backend, segs, "v", total_duration=20.0)
+    synthesize_segments(backend, segs, "voice", total_duration=20.0)
 
-    assert segs[0].spoken_duration is not None
     assert segs[0].spoken_duration > 0

@@ -4,7 +4,7 @@ Vì sao không dùng mốc thời gian của Whisper: ffmpeg đã cho ranh giớ
 (xem pipeline/segmentation.py). Whisper chỉ được giao đúng một việc là chép chữ cho từng
 vùng đã cắt sẵn, nên không cần tin vào mốc thời gian của nó.
 
-Chạy trên GPU khi máy có card NVIDIA. Đo trên video 18,9 phút, model `small`:
+Chạy trên CUDA khi máy có card NVIDIA. Đo trên video 18,9 phút, model `small`:
 
     CPU (int8)   : 268 giây
     GPU (float16):  81 giây     ← nhanh gấp 3,3 lần
@@ -35,6 +35,20 @@ _infer_lock = threading.Lock()
 # thử lại rồi ngã lại cho từng đoạn — hỏng 150 lần trên cùng một lý do thì chậm hơn hẳn CPU.
 _gpu_bi_loai = False
 
+# CPU batched inference is materially faster on Apple Silicon even though
+# faster-whisper itself cannot place the model on MPS. Keep a conservative
+# default/ceiling; the batch is measured in feature chunks, not model copies.
+DEFAULT_CPU_BATCH_SIZE = 8
+MAX_CPU_BATCH_SIZE = 8
+
+
+def _clamp_cpu_batch_size(value: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = DEFAULT_CPU_BATCH_SIZE
+    return max(0, min(parsed, MAX_CPU_BATCH_SIZE))
+
 
 def _thiet_bi() -> tuple[str, str]:
     """(device, compute_type) hợp với máy này.
@@ -51,14 +65,11 @@ def _thiet_bi() -> tuple[str, str]:
     """
     if _gpu_bi_loai:
         return "cpu", "int8"
-    try:
-        import torch
+    from .model_store import accel_device
 
-        if torch.cuda.is_available():
-            return "cuda", "float16"
-    except Exception as exc:
-        log.debug("Không dò được CUDA cho Whisper: %s", exc)
-    return "cpu", "int8"
+    # Whisper/faster-whisper dùng CTranslate2, hiện không có backend MPS/CoreML.
+    # Chỉ nhận CUDA khi probe chung đã chạy được phép tính thật; MPS phải giữ CPU.
+    return ("cuda", "float16") if accel_device() == "cuda" else ("cpu", "int8")
 
 
 def _loai_gpu(exc: Exception) -> None:
@@ -93,7 +104,7 @@ def _get_model(name: str, compute_type: str):
 def batch_size() -> int:
     """Số vùng chép lời trong MỘT lượt gọi GPU. 0 = chép từng vùng một (CPU).
 
-    Cùng câu chuyện với VieNeu: Whisper cũng bị nghẽn ở chi phí PHÓNG kernel chứ không phải
+    Whisper cũng bị nghẽn ở chi phí PHÓNG kernel chứ không phải
     sức tính. Đo trên video 18,9 phút (152 vùng), RTX 3090:
 
         từng vùng một      : 67 giây   (GPU 34%, 151W)
@@ -128,7 +139,7 @@ def prewarm(model: str = "small", compute_type: str = "int8") -> None:
     """Nạp model Whisper trong luồng nền lúc server khởi động — job đầu khỏi chờ tải model.
 
     Đo thật: lần nhận diện đầu tốn ~24s, trong đó ~11s chỉ để nạp model + khởi tạo cuDNN;
-    phần chép lời thật chỉ ~13s. Nạp sẵn từ lúc boot (song song với VieNeu) để job đầu chỉ
+    phần chép lời thật chỉ ~13s. Nạp sẵn từ lúc boot để job đầu chỉ
     còn phần tính. Chỉ nạp khi model đã nằm trên đĩa — không tự ý tải 484 MB lúc boot.
     """
     from .model_store import is_ready, whisper_spec
@@ -162,7 +173,7 @@ def sentences_from_words(
     Trả về [(start_câu, end_câu, văn_bản)]. Mốc câu = mốc từ đầu → mốc từ cuối của câu, là
     mốc căn chỉnh thật của Whisper. Câu cuối chưa có dấu kết vẫn được trả (mảnh dang dở) —
     merge_sentence_fragments sẽ ghép nó với mảnh mở của vùng kế. Nhờ tách theo câu, mỗi câu
-    thành một lượt đọc VieNeu riêng (ổn định hơn), đặt đúng thời điểm câu tiếng Anh.
+    thành một lượt đọc riêng, đặt đúng thời điểm câu tiếng Anh.
     """
     sentences: list[tuple[float, float, str]] = []
     parts: list[str] = []
@@ -206,20 +217,25 @@ class WhisperTranscriber:
     Trên GPU còn phơi thêm `transcribe_batch` — pipeline/stt.py sẽ ưu tiên dùng nó.
     """
 
-    def __init__(self, model: str = "small", compute_type: str = "int8"):
+    def __init__(self, model: str = "small", compute_type: str = "int8",
+                 *, cpu_batch_size: int = DEFAULT_CPU_BATCH_SIZE):
         self._model_name = model
         self._compute_type = compute_type
+        self._cpu_batch_size = _clamp_cpu_batch_size(cpu_batch_size)
 
     @property
     def stt_batch_size(self) -> int:
-        return batch_size()
+        device, _ = _thiet_bi()
+        if device == "cuda":
+            return batch_size()
+        if device == "cpu":
+            return self._cpu_batch_size
+        return 0
 
     @property
     def stt_timed(self) -> bool:
-        """Mốc thời gian cấp CÂU chỉ có ở đường gộp lô (GPU) qua BatchedInferencePipeline.
-        Trên CPU (từng vùng một) ta không lấy được mốc con → để pipeline lùi về cấp vùng.
-        """
-        return batch_size() > 0
+        """BatchedInferencePipeline giữ được mốc câu trên cả CPU và CUDA."""
+        return self.stt_batch_size > 0
 
     def _chep(self, wav_path: Path) -> tuple[str, str]:
         model = _get_model(self._model_name, self._compute_type)
@@ -264,7 +280,7 @@ class WhisperTranscriber:
         try:
             with _infer_lock:
                 segments, info = pipe.transcribe(audio, clip_timestamps=moc,
-                                                 batch_size=batch_size())
+                                                 batch_size=self.stt_batch_size)
                 chu: list[list[str]] = [[] for _ in regions]
                 for seg in segments:
                     i = _vung_chua(regions, bien, seg.start, seg.end)
@@ -289,7 +305,7 @@ class WhisperTranscriber:
         Với clip_timestamps, Whisper trả về MỘT segment cho mỗi vùng (không tự tách câu).
         Nên ta bật `word_timestamps=True` lấy mốc từng TỪ rồi tự tách câu theo dấu chấm câu
         (xem sentences_from_words) — cho mốc câu THẬT bên trong vùng. Mỗi câu → một Segment
-        đặt đúng thời điểm, để VieNeu đọc từng câu (ổn định) và bám hình sát. Vùng ffmpeg
+        đặt đúng thời điểm, để TTS đọc từng câu và bám hình. Vùng ffmpeg
         vẫn lo THỜI GIAN THÔ (clip_timestamps ràng buộc Whisper chỉ chép chỗ có tiếng).
         """
         import numpy as np
@@ -304,7 +320,7 @@ class WhisperTranscriber:
         try:
             with _infer_lock:
                 segments, info = pipe.transcribe(audio, clip_timestamps=moc,
-                                                 batch_size=batch_size(),
+                                                 batch_size=self.stt_batch_size,
                                                  word_timestamps=True)
                 pieces: list[tuple[float, float, str]] = []
                 for seg in segments:

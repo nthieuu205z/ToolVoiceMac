@@ -15,12 +15,18 @@ from dataclasses import dataclass
 class Voice:
     id: str            # định danh an toàn cho URL và form
     display_name: str
-    # Tên mà nhà cung cấp thật sự nhận, khi khác `id` (VieNeu dùng tên tiếng Việt có dấu).
+    # Tên mà nhà cung cấp thật sự nhận, khi khác `id`.
     native_id: str = ""
 
     @property
     def native(self) -> str:
         return self.native_id or self.id
+
+    @property
+    def custom(self) -> bool:
+        from . import custom_voices
+
+        return custom_voices.is_custom(self.id)
 
 
 # Giọng neural của Microsoft Edge. Không cần API key, không trần theo ngày.
@@ -62,39 +68,16 @@ GEMINI_VOICES: list[Voice] = [
     Voice("Rasalgethi", "Rasalgethi — thuyết minh, mạch lạc"),
 ]
 
-# Giọng dựng sẵn của VieNeu-TTS: chạy offline, Apache-2.0, có cả ba miền.
-# `native_id` là tên VieNeu nhận; `id` là slug an toàn cho URL nghe thử.
-VIENEU_VOICES: list[Voice] = [
-    Voice("truc-ly", "Trúc Ly — nữ, giọng Bắc, tự nhiên", "Trúc Ly"),
-    Voice("doan-trang", "Đoan Trang — nữ, giọng Bắc, tự nhiên", "Đoan Trang"),
-    Voice("ngoc-linh", "Ngọc Linh — nữ, giọng Bắc, kể chuyện", "Ngọc Linh"),
-    Voice("mai-anh", "Mai Anh — nữ, giọng Bắc, tin tức", "Mai Anh"),
-    Voice("pham-tuyen", "Phạm Tuyên — nam, giọng Bắc, tự nhiên", "Phạm Tuyên"),
-    Voice("thanh-binh", "Thanh Bình — nam, giọng Bắc, kể chuyện", "Thanh Bình"),
-    Voice("minh-duc", "Minh Đức — nam, giọng Bắc, tin tức", "Minh Đức"),
-
-    Voice("ngoc-tran", "Ngọc Trân — nữ, giọng Trung, tự nhiên", "Ngọc Trân"),
-    Voice("quang-son", "Quang Sơn — nam, giọng Trung, tự nhiên", "Quang Sơn"),
-
-    Voice("thuc-doan", "Thục Đoan — nữ, giọng Nam, kể chuyện", "Thục Đoan"),
-    Voice("thuy-dung", "Thùy Dung — nữ, giọng Nam, tin tức", "Thùy Dung"),
-    Voice("xuan-vinh", "Xuân Vĩnh — nam, giọng Nam, tự nhiên", "Xuân Vĩnh"),
-    Voice("thai-son", "Thái Sơn — nam, giọng Nam, kể chuyện", "Thái Sơn"),
-    Voice("minh-triet", "Minh Triết — nam, giọng Nam, tin tức", "Minh Triết"),
-]
-
 # OmniVoice không có giọng dựng sẵn — nó là engine nhân bản thuần, nên danh sách gốc rỗng;
 # giọng của nó hoàn toàn là các giọng nhân bản người dùng đã lưu (ghép vào bên dưới).
-_BY_PROVIDER = {"edge": EDGE_VOICES, "gemini": GEMINI_VOICES, "vieneu": VIENEU_VOICES,
-                "omnivoice": []}
+_BY_PROVIDER = {"edge": EDGE_VOICES, "gemini": GEMINI_VOICES, "omnivoice": []}
 
-# Nhà cung cấp dùng giọng nhân bản làm giọng đọc: VieNeu (kèm giọng dựng sẵn) và OmniVoice
-# (chỉ có giọng nhân bản).
-_CLONE_PROVIDERS = {"vieneu", "omnivoice"}
+# OmniVoice là engine duy nhất dùng giọng nhân bản.
+_CLONE_PROVIDERS = {"omnivoice"}
 
 
 def _clone_voices() -> list[Voice]:
-    """Giọng nhân bản người dùng đã lưu; id chính là tên mà engine offline nhận."""
+    """Giọng nhân bản người dùng đã lưu."""
     from . import custom_voices
 
     return [
@@ -104,7 +87,9 @@ def _clone_voices() -> list[Voice]:
 
 
 def voices_for(provider: str) -> list[Voice]:
-    base = _BY_PROVIDER.get(provider, EDGE_VOICES)
+    if provider not in _BY_PROVIDER:
+        raise ValueError(f"Nhà cung cấp giọng đọc không hợp lệ: {provider}")
+    base = _BY_PROVIDER[provider]
     if provider not in _CLONE_PROVIDERS:
         return base
     return base + _clone_voices()
@@ -117,7 +102,9 @@ def available_voices(tts_provider: str, clone_provider: str | None) -> list[Voic
     dù đặt TTS_PROVIDER=edge, người dùng vẫn thấy và chọn được giọng nhân bản — chúng sẽ
     được đọc bằng engine clone (OmniVoice) qua `route_provider`.
     """
-    voices = list(_BY_PROVIDER.get(tts_provider, EDGE_VOICES))
+    if tts_provider not in {"edge", "gemini"}:
+        raise ValueError(f"Nhà cung cấp preset không hợp lệ: {tts_provider}")
+    voices = list(_BY_PROVIDER[tts_provider])
     if clone_provider in _CLONE_PROVIDERS:
         voices += _clone_voices()
     return voices
@@ -131,8 +118,11 @@ def route_provider(voice_id: str, tts_provider: str, clone_provider: str | None)
     """
     from . import custom_voices
 
-    if clone_provider and custom_voices.is_custom(voice_id):
-        return clone_provider
+    if tts_provider not in {"edge", "gemini"}:
+        raise ValueError(f"Nhà cung cấp preset không hợp lệ: {tts_provider}")
+
+    if custom_voices.is_custom(voice_id):
+        return "omnivoice" if clone_provider == "omnivoice" else tts_provider
     return tts_provider
 
 
@@ -152,7 +142,7 @@ def default_voice(provider: str) -> str:
         raise ValueError(
             f"Nhà cung cấp '{provider}' chưa có giọng nào để chọn mặc định. OmniVoice chỉ đọc "
             f"bằng giọng nhân bản — hãy tạo/chỉ định một giọng nhân bản (id 'clone-…'), hoặc "
-            f"đổi TTS_PROVIDER sang edge/vieneu."
+            f"đổi TTS_PROVIDER sang edge hoặc gemini."
         )
     return voices[0].id
 

@@ -1,9 +1,10 @@
 """Ghép ba nhà cung cấp rời thành một backend mà pipeline mong đợi.
 
-Mỗi bước đổi độc lập qua .env, nên khi một dịch vụ hỏng vẫn còn đường lùi:
+Mỗi bước đổi độc lập qua .env:
 
     STT_PROVIDER=whisper|gemini    nhận diện giọng nói
-    TTS_PROVIDER=edge|gemini       tạo giọng đọc
+    TTS_PROVIDER=edge|gemini       tạo giọng đọc preset
+    CLONE_TTS_PROVIDER=omnivoice   tạo giọng đọc clone
     (dịch luôn dùng Gemini — chỉ tốn 1–4 lượt gọi cho cả video)
 """
 
@@ -24,8 +25,8 @@ class ProviderConfig:
     gemini_backend: str = "developer"   # developer (AI Studio) | vertex (Google Cloud)
     whisper_model: str = "small"
     whisper_compute_type: str = "int8"
+    whisper_cpu_batch_size: int = 8
     edge_tts_attempts: int = 5
-    vieneu_watermark: bool = False
     omnivoice_num_step: int = 32
     omnivoice_batch_size: int = 0
 
@@ -39,6 +40,14 @@ class LazyGemini:
     def __init__(self, config: ProviderConfig):
         self._config = config
         self._runner = None
+
+    @property
+    def engine(self) -> str:
+        return "gemini"
+
+    @property
+    def device(self) -> str:
+        return "cloud"
 
     def _get(self):
         if self._runner is None:
@@ -80,19 +89,47 @@ class CompositeBackend:
     def synthesize(self, text: str, voice_id: str) -> bytes:
         return self._synthesizer.synthesize(text, voice_id)
 
+    @property
+    def engine(self) -> str:
+        return str(getattr(self._synthesizer, "engine", ""))
+
+    @property
+    def device(self) -> str:
+        value = getattr(self._synthesizer, "device", "")
+        return str(value() if callable(value) else value)
+
+
     # ── gộp lô ──────────────────────────────────────────────────────────
-    # Cả hai model chạy trên máy (Whisper và VieNeu) đều nhanh hơn cả chục lần khi gộp lô.
-    # Vỏ bọc này PHẢI chuyển tiếp, nếu không stt.py/tts.py không thấy `*_batch_size` và
-    # LẶNG LẼ lùi về xử lý từng câu một — mất sạch phần tăng tốc mà không báo lỗi gì.
-    # Đã từng xảy ra đúng như vậy: xem tests/test_backend_batch_forwarding.py.
+    # Vỏ bọc phải chuyển tiếp khả năng gộp lô của provider local; nếu không pipeline
+    # sẽ lặng lẽ rơi về xử lý từng câu.
 
     @property
     def batch_size(self) -> int:
-        """0 = nhà cung cấp giọng đọc này không gộp lô được (edge-tts, Gemini, VieNeu/CPU)."""
-        return getattr(self._synthesizer, "batch_size", 0)
+        """0 = nhà cung cấp giọng đọc này không gộp lô được."""
+        value = getattr(self._synthesizer, "batch_size", 0)
+        try:
+            return max(0, int(str(value() if callable(value) else value or 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    @property
+    def mps_batch_safe(self) -> bool:
+        return getattr(self._synthesizer, "mps_batch_safe", True)
 
     def synthesize_batch(self, texts: list[str], voice_id: str) -> list[bytes]:
         return self._synthesizer.synthesize_batch(texts, voice_id)
+
+    def runtime_info(self) -> tuple[str, str, int]:
+        """Expose non-sensitive TTS runtime facts for the monitor."""
+        engine = str(getattr(self._synthesizer, "engine", ""))
+        device = getattr(self._synthesizer, "device", "")
+        device = str(device() if callable(device) else device)
+        batch = getattr(self._synthesizer, "batch_size", 0)
+        try:
+            batch = max(0, int(str(batch() if callable(batch) else batch or 0)))
+        except (TypeError, ValueError):
+            batch = 0
+        return engine, device, batch
 
     @property
     def stt_batch_size(self) -> int:
@@ -104,7 +141,7 @@ class CompositeBackend:
 
     @property
     def stt_timed(self) -> bool:
-        """True = nhận diện này trả về mốc thời gian cấp CÂU (Whisper/GPU), để đặt câu bám hình."""
+        """True = nhận diện này trả về mốc thời gian cấp CÂU."""
         return getattr(self._recognizer, "stt_timed", False)
 
     def transcribe_batch_timed(self, samples, rate: int, regions: list):
@@ -115,10 +152,19 @@ def build_backend(config: ProviderConfig) -> CompositeBackend:
     """Import muộn từng nhà cung cấp để không kéo phụ thuộc nặng khi không dùng tới."""
     gemini = LazyGemini(config)
 
+    if config.stt_provider not in {"whisper", "gemini"}:
+        raise ValueError(f"Nhà cung cấp STT không hợp lệ: {config.stt_provider}")
+    if config.tts_provider not in {"edge", "gemini", "omnivoice"}:
+        raise ValueError(f"Nhà cung cấp TTS không hợp lệ: {config.tts_provider}")
+
     if config.stt_provider == "whisper":
         from .whisper_stt import WhisperTranscriber
 
-        recognizer = WhisperTranscriber(config.whisper_model, config.whisper_compute_type)
+        recognizer = WhisperTranscriber(
+            config.whisper_model,
+            config.whisper_compute_type,
+            cpu_batch_size=config.whisper_cpu_batch_size,
+        )
     else:
         recognizer = gemini
 
@@ -126,10 +172,6 @@ def build_backend(config: ProviderConfig) -> CompositeBackend:
         from .edge_speech import EdgeSynthesizer
 
         synthesizer = EdgeSynthesizer(config.edge_tts_attempts)
-    elif config.tts_provider == "vieneu":
-        from .vieneu_speech import VieNeuSynthesizer
-
-        synthesizer = VieNeuSynthesizer(watermark=config.vieneu_watermark)
     elif config.tts_provider == "omnivoice":
         from .omnivoice_speech import OmniVoiceSynthesizer
 

@@ -5,9 +5,9 @@ Ngày: 2026-07-18 · Trạng thái: đã brainstorm, chờ duyệt để lên pl
 ## Mục tiêu
 
 Giọng **nhân bản** được đọc bằng **OmniVoice** (chất lượng người dùng đã nghe và chọn);
-giọng **dựng sẵn** giữ nguyên engine đang cấu hình (VieNeu/edge). Người dùng chỉ chọn
+giọng **dựng sẵn** giữ nguyên engine đang cấu hình (edge/Gemini). Người dùng chỉ chọn
 giọng — công cụ **tự định tuyến** đúng engine. Nền tảng v1 (backend `OmniVoiceSynthesizer`
-sequential, tests xanh, đã cài phòng thủ không đụng torch/VieNeu) đã có; đợt này biến nó
+sequential, tests xanh) đã có; đợt này biến nó
 thành first-class.
 
 Bối cảnh phần cứng: [[hardware-setup]] (GPU 12 GB). Cách làm: [[workflow-and-style]]
@@ -16,7 +16,7 @@ Bối cảnh phần cứng: [[hardware-setup]] (GPU 12 GB). Cách làm: [[workfl
 ## Quyết định đã chốt (qua brainstorm)
 
 1. **Định tuyến theo loại giọng** (không phải mặc định toàn cục, không phải tối giản).
-2. **Quản lý model tích hợp giao diện** (nút tải + %, nạp sẵn lúc boot — như VieNeu).
+2. **Quản lý model tích hợp giao diện** (nút tải + %, nạp sẵn lúc boot).
 3. **Dùng `duration` gốc của OmniVoice để căn khớp** — nhưng **A/B trước**, hơn thật mới thay atempo.
 
 ## Kiến trúc
@@ -26,20 +26,19 @@ Bối cảnh phần cứng: [[hardware-setup]] (GPU 12 GB). Cách làm: [[workfl
 Mỗi job dùng **một** giọng, nên chọn engine ngay lúc bắt đầu job, không phải mỗi câu:
 
 - `custom_voices.is_custom(voice_id)` (id `clone-…`) → **OmniVoice**
-- ngược lại → engine của `TTS_PROVIDER` (VieNeu preset / edge…)
+- ngược lại → engine của `TTS_PROVIDER` (edge/Gemini preset)
 
 Hiện thực bằng **provider hiệu lực theo job**: `create_job` đã có `voice_id`, nên tính
 `effective_tts_provider` rồi truyền vào `build_backend` qua closure `backend_factory`.
 KHÔNG cần lớp routing-wrapper → `batch_size`/`synthesize_batch` giữ nguyên đơn giản.
 
-Config mới: `CLONE_TTS_PROVIDER` (mặc định `omnivoice`; **tự lùi về `vieneu`** nếu OmniVoice
-chưa cài/chưa tải model — không cài gì thì không hỏng).
+Config mới: `CLONE_TTS_PROVIDER` (mặc định `omnivoice`; không tự lùi sang engine khác).
 
 ### 2. Tốc độ — gộp lô GPU cho OmniVoice
 
 `generate()` nhận **list** text → thêm `synthesize_batch` + `batch_size` **tự suy từ VRAM**
-(như VieNeu, không ghim số). ⚠️ **Ẩn số**: chưa biết OmniVoice gộp lô có lợi không (có thể
-nghẽn phóng kernel như VieNeu, hoặc tràn VRAM). → **spike đo trước** trên card 12 GB; nếu
+(tự suy từ VRAM, không ghim số). ⚠️ **Ẩn số**: chưa biết OmniVoice gộp lô có lợi không (có thể
+nghẽn phóng kernel hoặc tràn VRAM). → **spike đo trước** trên card 12 GB; nếu
 gộp lô không lợi thì lùi về sequential-song-song. Báo số thật trước khi chốt cách làm.
 
 ### 3. Tham số sinh (đặt cứng giá trị tốt, KHÔNG phơi ra UI per-video)
@@ -51,7 +50,7 @@ Nhưng dùng ngầm mấy cái:
   (thử 16/24/32, chọn mặc định). Đây là đòn bẩy tốc độ chính.
 - `language="Vietnamese"`: luôn dub sang Việt → nhích chất lượng/tốc độ miễn phí.
 - `postprocess_output=on` ("remove long silences"): nhiều khả năng OmniVoice **tự vá lỗ hổng
-  im lặng** (đúng khuyết tật Fix A của VieNeu) → đường clone khỏi cần logic đọc-lại-lỗ-hổng.
+  im lặng** → đường clone khỏi cần logic đọc-lại-lỗ-hổng.
 - Tiền xử lý ref (thêm dấu câu vào ref_text): bật — vì ref_text từ Whisper hay thiếu dấu chấm cuối.
 - `denoise=on`, `guidance_scale=2.0`: để mặc định.
 
@@ -70,7 +69,7 @@ Giữ bước Whisper chép ref_text một lần (ghi sidecar `<id>.reftext.txt`
 kiểm soát tốt. (Ghi chú: OmniVoice tự chép được nếu ref_text rỗng; ta không dựa vào để khỏi
 thêm phụ thuộc ASR của nó.)
 
-### 6. Quản lý model (giao diện, như VieNeu)
+### 6. Quản lý model (giao diện)
 
 Thêm OmniVoice vào `model_store`: nút tải + thanh %, và **prewarm** lúc boot khi model đã có
 → job clone đầu không khựng ~5 phút. Đường cài ghi rõ trong tài liệu (mẹo `--no-deps` +
@@ -78,7 +77,7 @@ Thêm OmniVoice vào `model_store`: nút tải + thanh %, và **prewarm** lúc b
 
 ### 7. Nhân bản & UX giọng
 
-- Bật nhân bản khi CÓ engine clone (VieNeu **hoặc** OmniVoice) — nay đang khóa cứng `vieneu`.
+- Bật nhân bản khi có OmniVoice.
   → có thể chạy edge preset + OmniVoice clone.
 - Danh sách giọng = preset (theo `TTS_PROVIDER`) + clone (luôn có). Kiểm tra hợp lệ nhận cả hai.
 - Nghe thử giọng clone tạo bằng đúng engine clone (để preview khớp job).

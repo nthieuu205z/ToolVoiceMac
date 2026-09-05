@@ -1,7 +1,7 @@
-"""VieNeu là model ngẫu nhiên: ~1–2% lượt đọc rút phải "lá bài xấu" — audio dài bình
+"""Model TTS là model ngẫu nhiên: ~1–2% lượt đọc rút phải "lá bài xấu" — audio dài bình
 thường nhưng có lỗ hổng im lặng dài ở giữa (đo thật: lỗ 4,72s), nghe như "ngắt đột ngột".
 Bộ chống chạy hoang cũ mù với ca này vì tổng độ dài vẫn hợp lý. Ở đây ta phát hiện lỗ
-hổng bất thường rồi đọc lại (VieNeu chạy local, đọc lại không tốn gì)."""
+hổng bất thường rồi đọc lại (provider local, đọc lại không tốn gì)."""
 
 from __future__ import annotations
 

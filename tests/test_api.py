@@ -33,6 +33,25 @@ def test_voices_endpoint_shape_matches_frontend_expectations(client):
     assert set(body[0]) == {"id", "display_name", "preview_url", "custom"}
 
 
+def test_voice_preview_endpoint_serves_a_known_preview(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(type(settings), "previews_dir", property(lambda self: tmp_path))
+    preview = tmp_path / "vi-VN-HoaiMyNeural.wav"
+    preview.write_bytes(b"RIFFfake")
+
+    response = client.get("/api/voices/vi-VN-HoaiMyNeural/preview")
+
+    assert response.status_code == 200
+    assert response.content == b"RIFFfake"
+
+
+def test_voice_preview_endpoint_rejects_unknown_voice(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(type(settings), "previews_dir", property(lambda self: tmp_path))
+
+    response = client.get("/api/voices/not-a-real-voice/preview")
+
+    assert response.status_code == 404
+
+
 def test_voice_list_follows_the_configured_provider(client, monkeypatch):
     monkeypatch.setattr(settings, "tts_provider", "gemini")
     assert len(client.get("/api/voices").json()) == 10
@@ -69,8 +88,7 @@ def test_a_voice_from_the_other_provider_is_rejected(client, monkeypatch):
 def test_index_page_is_served_at_root(client):
     # Không bám vào tên thương hiệu (thiết kế đổi được) — bám vào chức năng của trang.
     page = client.get("/").text
-    assert "Lồng tiếng" in page
-    assert 'src="app.js"' in page
+    assert 'src="app.js?v=' in page
 
 
 def test_current_job_is_empty_when_idle(client):
@@ -79,6 +97,29 @@ def test_current_job_is_empty_when_idle(client):
 
 def test_unknown_job_returns_404(client):
     assert client.get("/api/jobs/nope").status_code == 404
+
+
+def test_job_telemetry_endpoint_returns_monitor_payload(client, tmp_path):
+    job = Job(
+        id="telemetry",
+        filename="clip.mp4",
+        workdir=tmp_path,
+        voice_id="Kore",
+        status="running",
+        started_at=100.0,
+        stage_started_at=110.0,
+        stage_fraction=0.5,
+        percent=50.0,
+        engine="edge",
+        device="network",
+    )
+    manager._jobs[job.id] = job
+
+    response = client.get("/api/jobs/telemetry/telemetry")
+
+    assert response.status_code == 200
+    assert response.json()["telemetry_only"] is True
+    assert response.json()["engine"] == "edge"
 
 
 def test_rejects_unknown_voice(client, monkeypatch, tmp_path):
@@ -99,7 +140,7 @@ def test_rejects_upload_when_api_key_missing(client, monkeypatch):
         data={"voice_id": VOICES[0].id},
     )
     assert response.status_code == 500
-    assert "GEMINI_API_KEY" in response.json()["detail"]
+    assert "dịch vụ dịch thuật" in response.json()["detail"]
 
 
 def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_path):

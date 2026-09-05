@@ -1,7 +1,7 @@
 # Cài ToolVietSub trên Windows — máy có GPU rời NVIDIA
 
 Hướng dẫn này dành cho laptop/PC Windows 10/11 64-bit có card NVIDIA. GPU tăng tốc **cả hai
-bước nặng nhất**: **nhận diện giọng nói (Whisper)** và **tạo giọng đọc (VieNeu)** — cả hai
+**bước nặng nhất**: **nhận diện giọng nói (Whisper)** và **tạo giọng đọc (OmniVoice)** — cả hai
 đều gộp lô trên GPU, cỡ lô tự suy từ VRAM trống. Chỉ bước dịch cần mạng (Gemini). Không có
 GPU thì vẫn chạy được nhưng chậm hơn nhiều (tự lùi về CPU).
 
@@ -49,19 +49,18 @@ Nếu `ffmpeg` không được nhận: mở `.env`, điền đường dẫn đ�
 cd C:\duong\dan\toi\ToolVietSub
 python -m venv .venv
 .venv\Scripts\activate
-pip install -e ".[vieneu]"
+pip install -e ".[omnivoice]"
 ```
 
 Hai lỗi kinh điển của PowerShell:
 
 - **"running scripts is disabled"** khi activate → chạy
   `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` rồi mở lại PowerShell.
-- Ngoặc kép quanh `".[vieneu]"` là **bắt buộc** — PowerShell coi `[...]` là ký tự đặc biệt.
+- Ngoặc kép quanh `".[omnivoice]"` là **bắt buộc** — PowerShell coi `[...]` là ký tự đặc biệt.
 
 ## 4. Bật GPU
 
-`pip` mặc định cài PyTorch bản CPU. Thay bằng bản CUDA và cài thêm `transformers`
-(engine GPU của VieNeu cần nó, engine CPU thì không):
+`pip` mặc định cài PyTorch bản CPU. Thay bằng bản CUDA:
 
 ```powershell
 pip uninstall -y torch torchaudio
@@ -81,24 +80,22 @@ python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_
 ## 4b. (Tùy chọn) OmniVoice — giọng nhân bản chất lượng cao
 
 Mặc định `CLONE_TTS_PROVIDER=omnivoice`: khi bạn chọn một **giọng nhân bản**, tool đọc bằng
-OmniVoice (nhân bản zero-shot, nghe tự nhiên hơn hẳn VieNeu); giọng **dựng sẵn** vẫn dùng
-`TTS_PROVIDER`. Nếu chưa cài OmniVoice, tool **tự lùi về VieNeu** — không hỏng gì.
+OmniVoice (nhân bản zero-shot); giọng **dựng sẵn** vẫn dùng
+`TTS_PROVIDER`. Nếu chưa cài OmniVoice, tính năng clone sẽ báo thiếu dependency.
 
-Cài (chỉ phần *inference*, né xung đột `numpy 2.x` ↔ `librosa/numba` mà ta không cần):
+Cài extra inference của dự án:
 
 ```powershell
-pip install omnivoice --no-deps
-pip install accelerate
+pip install -e ".[omnivoice]"
 ```
 
 Model **~3,3 GB** tự tải lần đầu, hoặc bấm nút tải trong mục **"Model trên máy"** (có thanh %).
 Lời của clip mẫu (`ref_text`) do Whisper chép một lần rồi nhớ cạnh clip — bạn không phải nhập.
 
 > **License:** trọng số OmniVoice là **CC-BY-NC (phi thương mại)** — dùng cá nhân thoải mái,
-> nhưng nếu thương mại hoá thì đây là ràng buộc (VieNeu là Apache-2.0, không vướng).
+> nhưng nếu thương mại hoá thì đây là ràng buộc.
 
-Không muốn dùng OmniVoice? Đặt `CLONE_TTS_PROVIDER=vieneu` (nhân bản bằng VieNeu như cũ) hoặc
-`none` (tắt nhân bản) trong `.env`.
+Đặt `CLONE_TTS_PROVIDER=none` để tắt nhân bản trong `.env`.
 
 ## 5. Kiểm tra `.env`
 
@@ -109,7 +106,7 @@ rồi điền `GEMINI_API_KEY`. Cấu hình khuyến nghị (đã là mặc đ�
 GEMINI_BACKEND=vertex        # khóa tạo trong Google Cloud; khóa AI Studio thì để developer
 STT_PROVIDER=whisper         # nhận diện trên GPU (miễn phí) + cho mốc từng từ để cắt câu
 STT_WORKERS=1                # Whisper tự tuần tự hóa bên trong; để 1 cho khỏi tranh CPU
-TTS_PROVIDER=vieneu          # 14 giọng ba miền + nhân bản giọng, chạy trên GPU
+TTS_PROVIDER=edge            # giọng dựng sẵn; clone dùng OmniVoice
 SENTENCE_LEVEL_TIMING=true   # đọc theo từng câu theo mốc từng từ → bám hình sát
 MAX_UTTERANCE_SECONDS=12     # trần vùng ffmpeg TRƯỚC khi tách câu, đừng tăng nếu không có lý do
 ```
@@ -133,13 +130,12 @@ uvicorn backend.main:app --port 8000
 
 ## 7. Lần chạy đầu tiên
 
-1. Vào mục **"Model trên máy"** trên giao diện, bấm tải model VieNeu (~610 MB), đợi 100%.
+1. Vào mục **"Model trên máy"** trên giao diện, bấm tải model OmniVoice (~3,3 GB), đợi 100%.
 2. Chạy thử một video **ngắn** trước. Lần đầu tạo giọng, engine GPU sẽ **tự tải thêm
-   trọng số PyTorch** (cỡ 1–2 GB, chỉ một lần) — tiến trình hiện ở **cửa sổ terminal**,
-   không có thanh trên web, đừng tưởng treo.
-3. Xác nhận đang chạy GPU thật: terminal phải có dòng
-   `VieNeu-TTS v3 Turbo ready (backend=pytorch)`.
-   Nếu là `backend=onnx` tức đang chạy CPU → xem mục sự cố bên dưới.
+   trọng số** (chỉ một lần) — tiến trình hiện ở **cửa sổ terminal**, không có thanh trên web,
+   đừng tưởng treo.
+3. Xác nhận đang chạy GPU thật: theo dõi `nvidia-smi` trong lúc tạo giọng; tiến trình Python
+   phải chiếm VRAM và log phải ghi `Đang nạp OmniVoice trên cuda:0`.
    Chắc ăn hơn: mở `nvidia-smi` khi đang ở bước "Đang tạo giọng đọc" — python phải chiếm VRAM.
 
 ## 8. Cách dùng hằng ngày
@@ -147,7 +143,7 @@ uvicorn backend.main:app --port 8000
 Giao diện y hệt trên máy cũ:
 
 - **Thêm video**: kéo thả (.mp4, .mkv, .mov… tối đa 8 GB), có phần trăm tải lên.
-- **Chọn giọng**: 14 giọng Việt ba miền, bấm nghe thử từng giọng.
+- **Chọn giọng**: các giọng Edge/Gemini dựng sẵn và giọng clone OmniVoice.
 - **Nhân bản giọng**: bấm *＋ Nhân bản giọng*, đặt tên + tải mẫu audio **3–8 giây, một
   người nói, ít tạp âm**. Chỉ dùng giọng bạn có quyền sử dụng.
 - **Bắt đầu chuyển đổi**: theo dõi 7 bước trên thẻ job. Chạy song song tối đa 2 video,
@@ -163,8 +159,7 @@ Giao diện y hệt trên máy cũ:
 |---|---|
 | `running scripts is disabled` | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`, mở lại PowerShell |
 | `torch.cuda.is_available()` in `False` | Driver cũ (chạy `nvidia-smi` xem có lỗi không) hoặc lỡ cài torch bản CPU — làm lại bước 4 |
-| Terminal in `backend=onnx` dù có GPU | Thiếu `transformers` hoặc torch đang là bản CPU — làm lại bước 4 rồi khởi động lại server |
-| Lần đầu chạy GPU báo `No module named ...` | Codec của VieNeu nạp code từ Hugging Face nên có thể đòi thêm gói lẻ — `pip install <tên gói>` rồi chạy lại, chỉ phải làm một lần |
+| Lần đầu chạy GPU báo `No module named ...` | Cài lại extra OmniVoice: `pip install -e ".[omnivoice]"` rồi chạy lại |
 | Lần đầu nạp model rất chậm | Windows Defender quét file — thêm thư mục dự án vào *Exclusions*; laptop nhớ cắm sạc (chạy pin bị bóp xung) |
 | Cổng 8000 bận | `uvicorn backend.main:app --port 8080` |
-| GPU trục trặc, muốn ép về CPU | `pip uninstall -y torch torchaudio` rồi `pip install torch torchaudio` (bản PyPI mặc định là CPU) — engine tự quay về ONNX/CPU, mọi tính năng kể cả nhân bản giọng vẫn chạy |
+| GPU trục trặc, muốn ép về CPU | Để `accel_device()` trả CPU sau khi probe thất bại; OmniVoice vẫn chạy nhưng chậm hơn |

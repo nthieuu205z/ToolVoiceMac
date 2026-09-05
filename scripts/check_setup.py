@@ -12,6 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend.config import settings  # noqa: E402
+from pipeline import custom_voices  # noqa: E402
 from pipeline.errors import FFmpegNotFoundError  # noqa: E402
 from pipeline.ffmpeg_utils import resolve, set_binaries  # noqa: E402
 from pipeline.voices import voices_for  # noqa: E402
@@ -46,22 +47,32 @@ def check_stt() -> bool:
 
 def check_tts() -> bool:
     provider = settings.tts_provider
-    voices = voices_for(provider)
+    try:
+        voices = voices_for(provider)
+    except ValueError as exc:
+        print(f"{BAD} Cấu hình giọng đọc không hợp lệ: {exc}")
+        return False
+
+    clone = settings.resolved_clone_provider
+    if clone == "omnivoice":
+        try:
+            import omnivoice  # noqa: F401
+            import torch  # noqa: F401
+        except ImportError:
+            print(f"{BAD} Thiếu OmniVoice hoặc PyTorch. Chạy: uv pip install -e '.[omnivoice]'")
+            return False
+        print(f"{OK} Giọng nhân bản: OmniVoice, chạy offline sau khi tải model")
+        print(f"{INFO}   {len(custom_voices.list_custom())} giọng nhân bản; model khoảng 3,3 GB")
+        if settings.tts_provider == "edge":
+            print(f"{INFO}   Giọng clone sẽ dùng OmniVoice; giọng dựng sẵn vẫn dùng edge-tts")
+    elif settings.clone_tts_provider == "omnivoice":
+        print(f"{BAD} OmniVoice chưa sẵn sàng. Chạy: uv pip install -e '.[omnivoice]'")
+        return False
+
 
     if provider == "gemini":
         print(f"{INFO} Giọng đọc: Gemini ({settings.gemini_tts_model}) — trần ~100 lượt/ngày")
         print(f"{INFO}   {len(voices)} giọng khả dụng")
-        return True
-
-    if provider == "vieneu":
-        try:
-            import vieneu  # noqa: F401
-        except ImportError:
-            print(f"{BAD} Thiếu VieNeu-TTS. Chạy: uv pip install -e '.[vieneu]'")
-            return False
-        print(f"{OK} Giọng đọc: VieNeu-TTS, miễn phí, chạy offline, Apache-2.0")
-        print(f"{INFO}   {len(voices)} giọng bản địa (Bắc/Trung/Nam)")
-        print(f"{INFO}   chậm hơn edge-tts ~8 lần; lần đầu tải model ~610 MB")
         return True
 
     try:
