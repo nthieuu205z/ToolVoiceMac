@@ -6,7 +6,14 @@ import re
 
 import pytest
 
-from pipeline.models import STAGES, overall_percent
+from pipeline.models import (
+    STAGES,
+    STAGES_BY_JOB_TYPE,
+    STAGE_WEIGHTS_BY_JOB_TYPE,
+    TEXT_STAGES,
+    VIDEO_STAGES,
+    overall_percent,
+)
 
 
 def test_first_stage_starts_at_zero():
@@ -41,6 +48,32 @@ def test_stage_names_match_the_frontend_data_attributes():
 def test_subtitles_are_built_after_speech():
     """Cue phụ đề bám theo thời lượng đọc thật, nên phải chạy sau bước tạo giọng đọc."""
     assert STAGES.index("subtitle") > STAGES.index("synthesize")
+
+
+def test_text_jobs_use_their_own_ordered_stages_and_weights():
+    assert TEXT_STAGES == ("prepare", "synthesize", "assemble", "export")
+    assert STAGES_BY_JOB_TYPE["text_to_voice"] == TEXT_STAGES
+    assert sum(STAGE_WEIGHTS_BY_JOB_TYPE["text_to_voice"].values()) == 100
+    assert overall_percent("prepare", 0.0, job_type="text_to_voice") == 0.0
+    assert overall_percent("export", 1.0, job_type="text_to_voice") == 100.0
+
+
+def test_video_stage_alias_retains_the_legacy_list_contract():
+    assert tuple(STAGES) == VIDEO_STAGES
+    assert STAGES_BY_JOB_TYPE["video_dubbing"] == VIDEO_STAGES
+
+
+def test_unknown_restored_stage_returns_its_persisted_percentage():
+    assert overall_percent(
+        "retired-stage",
+        0.5,
+        job_type="text_to_voice",
+        fallback=42.5,
+    ) == 42.5
+
+
+def test_unknown_job_type_without_a_fallback_is_neutral():
+    assert overall_percent("extract", 0.5, job_type="future_job") == 0.0
 
 
 def test_frontend_stage_labels_match_the_backend_order():

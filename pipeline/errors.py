@@ -50,6 +50,18 @@ class SpeechServiceError(PipelineError):
     )
 
 
+class InvalidTextError(PipelineError):
+    """Văn bản đầu vào không có nội dung có thể đọc."""
+
+    user_message = "Vui lòng nhập nội dung cần chuyển thành giọng nói."
+
+
+class TextTooLongError(PipelineError):
+    """Văn bản đầu vào vượt giới hạn an toàn của một job."""
+
+    user_message = "Nội dung không được vượt quá 50.000 ký tự."
+
+
 class QuotaExhaustedError(PipelineError):
     """Hạn mức theo NGÀY đã cạn. Thử lại vô nghĩa — reset phải đợi tới hôm sau."""
 
