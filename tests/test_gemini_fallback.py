@@ -223,6 +223,27 @@ def test_deprecated_constructor_language_remains_the_omitted_call_default():
     assert sent == ["en-US"]
 
 
+def test_explicit_vietnamese_overrides_deprecated_constructor_language():
+    sent = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            sent.append(config.speech_config.language_code)
+            return _Response(parts=[_Part(b"\x0a")])
+
+    configured = GeminiRunner(
+        api_key="dummy",
+        stt_model="m",
+        translate_model="m",
+        tts_model="m",
+        tts_language_code="en-US",
+    )
+    configured._client = _Client(_Models())
+
+    assert configured.synthesize("xin chào", "Kore", language="vi-VN") == b"\x0a"
+    assert sent == ["vi-VN"]
+
+
 def test_the_rejection_is_remembered_for_later_segments(runner):
     models = _LanguageCodeTrap()
     runner._client = _Client(models)

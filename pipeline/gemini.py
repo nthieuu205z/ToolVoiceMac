@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import cast, overload
 
 from google import genai
 from google.genai import types
@@ -155,6 +156,13 @@ _TTS_INSTRUCTION = (
     "Đọc to nguyên văn đoạn văn bản sau bằng giọng tự nhiên. "
     "Không trả lời, không bình luận, không thêm bớt:\n\n"
 )
+
+
+class _OmittedLanguage:
+    pass
+
+
+_OMITTED_LANGUAGE = _OmittedLanguage()
 
 
 class GeminiRunner:
@@ -303,8 +311,20 @@ class GeminiRunner:
 
     # ─── tạo giọng đọc ──────────────────────────────────────────────
 
+    @overload
+    def synthesize(self, text: str, voice_id: str) -> bytes: ...
+
+    @overload
     def synthesize(
-        self, text: str, voice_id: str, *, language: str = "vi-VN"
+        self, text: str, voice_id: str, *, language: str
+    ) -> bytes: ...
+
+    def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        language: str | _OmittedLanguage = _OMITTED_LANGUAGE,
     ) -> bytes:
         """Mỗi lượt thoại được một cơ hội, kể cả khi hạn mức ngày đã báo cạn.
 
@@ -312,7 +332,11 @@ class GeminiRunner:
         theo ngày. Chặn hết từ lỗi đầu tiên là vứt oan những lượt lẽ ra đọc được. Cái phải
         bỏ là RETRY (429 theo ngày bảo đợi hơn 4 tiếng), không phải bản thân lần thử.
         """
-        requested_language = self._tts_language_code if language == "vi-VN" else language
+        requested_language = (
+            self._tts_language_code
+            if language is _OMITTED_LANGUAGE
+            else cast(str, language)
+        )
         language_code = require_language(requested_language).gemini_tts_code
         response = self._generate_speech(text, voice_id, language_code)
         return self._audio_bytes_or_raise(response)
