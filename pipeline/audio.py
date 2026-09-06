@@ -5,6 +5,7 @@ Toàn bộ pipeline làm việc với PCM 16-bit mono nên numpy + module `wave`
 
 from __future__ import annotations
 
+import io
 import re
 import tempfile
 import wave
@@ -64,6 +65,17 @@ def pcm_to_array(pcm: bytes) -> np.ndarray:
     if len(pcm) % 2:
         pcm = pcm[:-1]
     return np.frombuffer(pcm, dtype="<i2")
+
+
+def pcm_to_wav_bytes(pcm: bytes, rate: int = TTS_SAMPLE_RATE) -> bytes:
+    """Wrap PCM 16-bit mono in an in-memory WAV container."""
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(rate)
+        wav.writeframes(pcm)
+    return buffer.getvalue()
 
 
 def write_wav(path: Path, samples: np.ndarray, rate: int = TTS_SAMPLE_RATE) -> Path:
