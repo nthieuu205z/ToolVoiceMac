@@ -27,13 +27,14 @@ def test_voice_card_controls_do_not_use_tracking_heavy_monospace_text():
 def test_voice_cards_reserve_space_for_name_and_actions():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert "grid-template-columns: repeat(auto-fit, minmax(420px, 1fr))" in css
-    assert "grid-template-columns: 30px minmax(0, 1fr) 193px" in css
+    assert ".voice-list { display: grid; grid-template-columns: 1fr;" in css
+    assert "grid-template-columns: 36px minmax(0, 1fr) auto" in css
+    assert ".voice-actions { display: flex; flex-wrap: wrap;" in css
     assert "text-overflow: ellipsis" in css
 
 
 def test_static_asset_version_includes_the_multilingual_composer_release():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
 
-    assert 'href="style.css?v=20260906-43"' in html
-    assert 'src="app.js?v=20260906-43"' in html
+    assert 'href="style.css?v=20260906-44"' in html
+    assert 'src="app.js?v=20260906-44"' in html

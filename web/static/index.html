@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260906-43">
+  <link rel="stylesheet" href="style.css?v=20260906-44">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Bỏ qua điều hướng</a>
@@ -102,12 +102,19 @@
 
       <section class="panel voice-panel" id="voiceSettings" aria-labelledby="voice-title">
         <div class="panel-heading compact"><div><p class="eyebrow">VOICE LAB</p><h2 id="voice-title">Giọng đọc</h2></div><span class="upload-step">OMNIVOICE</span></div>
-        <div class="voice-toolbar"><div><strong>Giọng nhân bản</strong><p>Tạo một giọng mới từ audio mẫu. Engine clone chạy local trên OmniVoice.</p></div><div class="voice-toolbar-actions"><label class="field-wrap compact-field"><span class="field-label">Ngôn ngữ nghe thử</span><select id="voiceLabLanguage"></select></label><span class="voice-count" id="voiceCount">0 giọng</span><button class="button small" id="toggleVoiceForm" type="button" aria-expanded="false">+ Tạo giọng</button></div></div>
-        <div class="voice-list" id="voiceList"><div class="event-empty">Đang tải danh sách giọng…</div></div>
-        <form class="voice-form" id="voiceForm" hidden>
-          <div class="voice-form-grid"><label class="field-wrap"><span class="field-label">Tên giọng</span><input id="cloneName" name="name" type="text" maxlength="40" placeholder="Ví dụ: Giọng của tôi" required></label><label class="field-wrap"><span class="field-label">Audio mẫu</span><input id="cloneAudio" name="audio" type="file" accept="audio/*" required></label><button class="button primary" id="createVoiceButton" type="submit">Tạo giọng</button></div>
-          <p class="form-hint" id="voiceFormHint">Nên dùng audio 3–8 giây, một người nói, ít tạp âm.</p>
-        </form>
+        <div class="voice-disclosure-stack">
+          <details class="voice-disclosure" id="voiceListDisclosure" open>
+            <summary class="voice-disclosure-summary" id="voiceListToggle"><span><strong>Danh sách giọng</strong><small>Quản lý, nghe thử và chọn giọng nhân bản</small></span><span class="voice-summary-meta"><span class="voice-count" id="voiceCount">0 giọng</span><span class="disclosure-chevron" aria-hidden="true"></span></span></summary>
+            <div class="voice-disclosure-body"><div class="voice-toolbar"><div><p>Lọc các giọng hiện có theo ngôn ngữ nghe thử.</p></div><div class="voice-toolbar-actions"><label class="field-wrap compact-field"><span class="field-label">Ngôn ngữ nghe thử</span><select id="voiceLabLanguage"></select></label></div></div><div class="voice-list" id="voiceList"><div class="event-empty">Đang tải danh sách giọng…</div></div></div>
+          </details>
+          <details class="voice-disclosure" id="voiceCreateDisclosure">
+            <summary class="voice-disclosure-summary" id="toggleVoiceForm"><span><strong>Tạo giọng mới</strong><small>Thêm giọng nhân bản từ một đoạn audio mẫu</small></span><span class="disclosure-chevron" aria-hidden="true"></span></summary>
+            <div class="voice-disclosure-body"><form class="voice-form" id="voiceForm">
+              <div class="voice-form-grid"><label class="field-wrap"><span class="field-label">Tên giọng</span><input id="cloneName" name="name" type="text" maxlength="40" placeholder="Ví dụ: Giọng của tôi" required></label><label class="field-wrap"><span class="field-label">Audio mẫu</span><input id="cloneAudio" name="audio" type="file" accept="audio/*" required></label><button class="button primary" id="createVoiceButton" type="submit">Tạo giọng</button></div>
+              <p class="form-hint" id="voiceFormHint">Nên dùng audio 3–8 giây, một người nói, ít tạp âm.</p>
+            </form></div>
+          </details>
+        </div>
       </section>
 
       <section class="lower-grid">
@@ -122,6 +129,6 @@
   </div>
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
   <div class="sr-status" id="srStatus" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=20260906-43"></script>
+  <script src="app.js?v=20260906-44"></script>
 </body>
 </html>

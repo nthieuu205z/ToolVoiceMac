@@ -8,7 +8,8 @@ def test_voice_cards_stack_actions_inside_the_card():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
     js = (ROOT / "app.js").read_text(encoding="utf-8")
 
-    assert "grid-template-columns: 30px minmax(0, 1fr) 193px" in css
+    assert "grid-template-columns: 36px minmax(0, 1fr) auto" in css
+    assert ".voice-actions { display: flex; flex-wrap: wrap;" in css
     assert ".voice-actions" in css
     assert "overflow: hidden" in css
     assert "voice-actions" in css

@@ -66,6 +66,22 @@ def test_job_type_icons_render_for_queue_and_selected_job():
     assert ".selected-actions { display: flex; flex-wrap: wrap;" in CSS
 
 
+def test_text_job_icons_stay_inside_their_queue_and_selected_boxes():
+    assert ".job-type-icon.icon-sound::before {" in CSS
+    assert ".job-type-icon.icon-sound::after {" in CSS
+    assert ".file-icon.icon-sound::before {" in CSS
+    assert ".file-icon.icon-sound::after {" in CSS
+    assert ".job-type-icon.icon-sound::before, .file-icon.icon-sound::before" not in CSS
+
+
+def test_selected_job_long_title_wraps_without_overflowing_the_panel():
+    assert ".workspace-grid > * { min-width: 0; }" in CSS
+    assert ".selected-file > div:last-child { min-width: 0; flex: 1; }" in CSS
+    assert "#selectedFilename { display: -webkit-box;" in CSS
+    assert "overflow-wrap: anywhere" in CSS
+    assert '$("#selectedFilename").title = jobTitle(job);' in JS
+
+
 def test_graph_stage_definitions_cover_both_job_types():
     assert 'video_dubbing: ["extract", "transcribe", "translate", "synthesize", "subtitle", "assemble", "mux"]' in JS
     assert 'text_to_voice: ["prepare", "synthesize", "assemble", "export"]' in JS
@@ -118,6 +134,22 @@ def test_voice_lab_has_a_language_selector_and_preview_retry_contract():
     assert "Tạo lại demo" in JS
     assert "function pollVoicePreview" in JS
     assert "window.setTimeout(() => pollVoicePreview" in JS
+
+
+def test_voice_lab_is_split_into_two_native_collapsible_panels():
+    assert '<details class="voice-disclosure" id="voiceListDisclosure" open>' in HTML
+    assert '<summary class="voice-disclosure-summary" id="voiceListToggle">' in HTML
+    assert '<details class="voice-disclosure" id="voiceCreateDisclosure">' in HTML
+    assert '<summary class="voice-disclosure-summary" id="toggleVoiceForm">' in HTML
+    assert 'id="voiceForm" hidden' not in HTML
+    assert "voiceCreateDisclosure.open = false" in JS
+
+
+def test_voice_cards_do_not_reserve_a_fixed_action_column():
+    assert ".voice-list { display: grid; grid-template-columns: 1fr;" in CSS
+    assert ".voice-item { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;" in CSS
+    assert ".voice-actions { display: flex; flex-wrap: wrap;" in CSS
+    assert "width: 193px" not in CSS
 
 
 def test_on_demand_preview_can_be_stopped_without_starting_another_request():

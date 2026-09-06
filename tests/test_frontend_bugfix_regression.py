@@ -45,8 +45,8 @@ def test_upload_sends_the_selected_file_with_its_filename():
 def test_ui_assets_are_cache_busted_after_bugfix():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
 
-    assert 'style.css?v=20260906-43' in html
-    assert 'app.js?v=20260906-43' in html
+    assert 'style.css?v=20260906-44' in html
+    assert 'app.js?v=20260906-44' in html
 
 
 def test_ui_uses_a_vietnamese_safe_font_stack():
@@ -63,9 +63,9 @@ def test_voice_lab_has_bounded_card_layout_and_readable_metadata():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
 
     assert ".voice-panel { margin-top: 13px; padding: 20px; overflow: hidden; }" in css
-    assert ".voice-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr));" in css
+    assert ".voice-list { display: grid; grid-template-columns: 1fr;" in css
     assert "max-width: none;" in css
-    assert ".voice-item { display: grid; grid-template-columns: 30px minmax(0, 1fr) 193px;" in css
+    assert ".voice-item { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto;" in css
     assert ".voice-item-main { min-width: 0; overflow: hidden; }" in css
     assert ".voice-item-main small { display: block; margin-top: 4px;" in css
     assert "white-space: nowrap;" in css
@@ -74,17 +74,18 @@ def test_voice_lab_has_bounded_card_layout_and_readable_metadata():
 def test_voice_lab_actions_cannot_escape_the_card():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert ".voice-actions { display: flex; align-items: center; justify-content: flex-end; gap: 7px; width: 193px; min-width: 0; flex: 0 0 193px; }" in css
+    assert ".voice-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 7px; min-width: 0; }" in css
     assert ".voice-preview {" in css
     assert "min-width: 0;" in css
     assert ".voice-preview span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }" in css
-    assert ".voice-delete { width: 34px; height: 34px;" in css
+    assert ".voice-delete { width: 44px; height: 44px; }" in css
 
 
 def test_voice_lab_mobile_rules_keep_grid_inside_the_panel():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
 
-    assert ".voice-list { grid-template-columns: 1fr; }" in css
+    assert ".voice-list { display: grid; grid-template-columns: 1fr;" in css
+    assert ".voice-item { grid-template-columns: 36px minmax(0, 1fr); }" in css
     assert ".voice-panel { margin-top: 13px; padding: 20px; overflow: hidden; }" in css
     assert ".main-content { width: 100%; margin: 0; padding: 0 15px 24px; overflow-x: hidden; }" in css
 
