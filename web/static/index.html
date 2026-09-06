@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260906-37">
+  <link rel="stylesheet" href="style.css?v=20260906-38">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Bỏ qua điều hướng</a>
@@ -65,16 +65,16 @@
 
       <section class="workspace-grid" aria-label="Job và pipeline">
         <div class="panel jobs-panel" id="jobs">
-          <div class="panel-heading"><div><p class="eyebrow">VIDEO QUEUE</p><h2>Video đang xử lý</h2></div><div class="panel-heading-actions"><button class="text-button" id="newJobButton" type="button">↓ Đến khu upload</button><button class="text-button danger-text" id="shutdownButton" type="button">Tắt tool</button></div></div>
+          <div class="panel-heading"><div><p class="eyebrow">JOB QUEUE</p><h2>HÀNG ĐỢI XỬ LÝ</h2></div><div class="panel-heading-actions"><button class="text-button" id="newJobButton" type="button">↓ Tạo job mới</button><button class="text-button danger-text" id="shutdownButton" type="button">Tắt tool</button></div></div>
           <div class="job-list" id="jobList"></div>
-          <div class="empty-state" id="jobsEmpty"><div class="empty-graphic" aria-hidden="true"><span></span><span></span><span></span></div><strong>Chưa có video trong hàng đợi</strong><p>Thêm một video để bắt đầu theo dõi pipeline trực tiếp.</p><button class="button primary small" type="button" data-action="open-upload">Đến khu upload</button></div>
+          <div class="empty-state" id="jobsEmpty"><div class="empty-graphic" aria-hidden="true"><span></span><span></span><span></span></div><strong>Chưa có job trong hàng đợi</strong><p>Tạo video dubbing hoặc giọng đọc để theo dõi tiến trình trực tiếp.</p><button class="button primary small" type="button" data-action="open-upload">Tạo job mới</button></div>
         </div>
 
         <aside class="panel selected-panel" aria-labelledby="selected-title">
           <div class="panel-heading compact"><div><p class="eyebrow">SELECTED JOB</p><h2 id="selected-title">Chi tiết job</h2></div><span class="live-label" id="selectedLiveLabel"><span class="status-dot neutral"></span> IDLE</span></div>
           <div class="selected-empty" id="selectedEmpty"><span class="icon icon-target" aria-hidden="true"></span><p>Chọn một job bên trái để xem tiến trình chi tiết.</p></div>
           <div id="selectedContent" hidden>
-            <div class="selected-file"><div class="file-icon icon-film" aria-hidden="true"></div><div><strong id="selectedFilename">—</strong><span id="selectedVoice">—</span></div></div>
+            <div class="selected-file"><div class="file-icon icon-film" id="selectedFileIcon" aria-hidden="true"></div><div><div class="selected-type-row"><span class="job-type-badge" id="selectedJobType">—</span><span id="selectedLanguage">—</span></div><strong id="selectedFilename">—</strong><span id="selectedVoice">—</span></div></div>
             <div class="selected-stage-summary"><div class="hero-progress-head"><span id="selectedStage">Đang chờ</span><strong id="selectedPercent">0%</strong></div><div class="progress-caption"><span id="selectedMessage">—</span><span id="selectedEta">ETA —</span></div></div>
             <div class="stat-strip"><div><span>ĐÃ CHẠY</span><strong class="mono" id="selectedElapsed">00:00</strong></div><div><span>STAGE</span><strong class="mono" id="selectedStageElapsed">00:00</strong></div><div><span>SEGMENTS</span><strong class="mono" id="selectedSegments">—</strong></div></div>
             <div class="runtime-card"><div class="runtime-head"><span class="eyebrow">RUNTIME</span><span class="runtime-live"><span class="status-dot live"></span> LIVE</span></div><div class="runtime-grid"><div><span>ENGINE</span><strong id="selectedEngine">—</strong></div><div><span>DEVICE</span><strong id="selectedDevice">—</strong></div><div><span>BATCH</span><strong class="mono" id="selectedBatch">—</strong></div></div></div>
@@ -86,15 +86,7 @@
       <section class="panel pipeline-panel" id="architecture" aria-labelledby="pipeline-title">
         <div class="panel-heading"><div><p class="eyebrow">EXECUTION GRAPH</p><h2 id="pipeline-title">Pipeline lõi</h2></div><div class="graph-legend"><span><i class="legend-dot completed"></i>Đã xong</span><span><i class="legend-dot active"></i>Đang chạy</span><span><i class="legend-dot pending"></i>Chờ</span></div></div>
         <div class="graph-scroll-shell">
-          <div class="graph-track" id="pipelineGraph" role="list" aria-label="Các bước xử lý video">
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="extract"><span class="node-index">01</span><span class="node-icon icon-upload" aria-hidden="true"></span><strong>Upload</strong><small>Input video</small></div><div class="graph-rail" aria-hidden="true"><span class="graph-link" data-flow-index="0"><span class="graph-flow"></span></span></div></div>
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="transcribe"><span class="node-index">02</span><span class="node-icon icon-wave" aria-hidden="true"></span><strong>Whisper STT</strong><small>Nhận diện</small></div><div class="graph-rail" aria-hidden="true"><span class="graph-link" data-flow-index="1"><span class="graph-flow"></span></span></div></div>
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="translate"><span class="node-index">03</span><span class="node-icon icon-language" aria-hidden="true"></span><strong>Gemini</strong><small>Dịch thuật</small></div><div class="graph-rail" aria-hidden="true"><span class="graph-link" data-flow-index="2"><span class="graph-flow"></span></span></div></div>
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="synthesize"><span class="node-index">04</span><span class="node-icon icon-sound" aria-hidden="true"></span><strong>OmniVoice</strong><small id="graphTtsNote">MPS · batch</small></div><div class="graph-rail" aria-hidden="true"><span class="graph-link" data-flow-index="3"><span class="graph-flow"></span></span></div></div>
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="subtitle"><span class="node-index">05</span><span class="node-icon icon-caption" aria-hidden="true"></span><strong>Subtitle</strong><small>Phụ đề .srt</small></div><div class="graph-rail" aria-hidden="true"><span class="graph-link" data-flow-index="4"><span class="graph-flow"></span></span></div></div>
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="assemble"><span class="node-index">06</span><span class="node-icon icon-layers" aria-hidden="true"></span><strong>Assemble</strong><small>Ghép audio</small></div><div class="graph-rail" aria-hidden="true"><span class="graph-link" data-flow-index="5"><span class="graph-flow"></span></span></div></div>
-            <div class="graph-step" role="listitem"><div class="graph-node" data-stage="mux"><span class="node-index">07</span><span class="node-icon icon-export" aria-hidden="true"></span><strong>Export</strong><small>Video hoàn tất</small></div></div>
-          </div>
+          <div class="graph-track" id="pipelineGraph" role="list" aria-label="Các bước xử lý job"></div>
           <span class="graph-scroll-cue" aria-hidden="true">Kéo ngang để xem toàn bộ pipeline</span>
         </div>
         <div class="graph-detail" id="graphDetail"><span class="detail-pulse"></span><div><strong id="graphDetailTitle">Chưa có job đang chạy</strong><p id="graphDetailText">Sơ đồ sẽ phát sáng theo từng bước khi pipeline hoạt động.</p></div><span class="mono" id="graphDetailTime">—</span></div>
@@ -119,7 +111,7 @@
 
       <section class="lower-grid">
         <div class="panel event-panel"><div class="panel-heading compact"><div><p class="eyebrow">EVENT STREAM</p><h2>Nhật ký hoạt động</h2></div><button class="text-button" id="clearEvents" type="button">Xóa hiển thị</button></div><div class="event-list" id="eventList"><div class="event-empty">Chưa có sự kiện mới.</div></div></div>
-        <div class="panel session-panel"><div class="panel-heading compact"><div><p class="eyebrow">SESSION</p><h2>Phiên làm việc</h2></div></div><p class="session-copy">Mọi video được xử lý trên máy local. Sự kiện của job đang chọn được cập nhật liên tục qua SSE.</p></div>
+        <div class="panel session-panel"><div class="panel-heading compact"><div><p class="eyebrow">SESSION</p><h2>Phiên làm việc</h2></div></div><p class="session-copy">Mọi job được xử lý qua hàng đợi dùng chung. Sự kiện của job đang chọn được cập nhật liên tục qua SSE.</p></div>
       </section>
 
       <section class="panel settings-panel" id="settings" aria-labelledby="settings-title"><div class="panel-heading compact"><div><p class="eyebrow">RUNTIME SETTINGS</p><h2 id="settings-title">Cấu hình Gemini</h2></div><span class="settings-status" id="geminiSettingsStatus">Chưa cấu hình</span></div><form id="geminiSettingsForm" class="settings-form" novalidate><label class="field-wrap"><span class="field-label">Gemini API key</span><input id="geminiApiKey" name="api_key" type="password" autocomplete="new-password" placeholder="Dán key Gemini tại đây" required></label><label class="field-wrap"><span class="field-label">Endpoint</span><select id="geminiBackend" name="backend"><option value="developer">Developer API / AI Studio</option><option value="vertex">Vertex AI Express Mode</option></select></label><button class="button primary" type="submit">Lưu cấu hình</button></form><p class="form-hint" id="geminiSettingsHint">Key được lưu vào .env local. Giao diện không hiển thị lại key sau khi lưu.</p></section>
@@ -129,6 +121,6 @@
   </div>
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
   <div class="sr-status" id="srStatus" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=20260906-37"></script>
+  <script src="app.js?v=20260906-38"></script>
 </body>
 </html>

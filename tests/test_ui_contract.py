@@ -27,5 +27,8 @@ def test_voice_lab_has_select_preview_and_delete_actions():
 
 def test_pipeline_graph_declares_all_runtime_stages():
     html = Path("web/static/index.html").read_text(encoding="utf-8")
+    js = Path("web/static/app.js").read_text(encoding="utf-8")
+    assert 'id="pipelineGraph"' in html
+    assert "function renderGraphNodes(job)" in js
     for stage in ("extract", "transcribe", "translate", "synthesize", "subtitle", "assemble", "mux"):
-        assert f'data-stage="{stage}"' in html
+        assert f'"{stage}"' in js

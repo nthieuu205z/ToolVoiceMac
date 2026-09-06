@@ -82,8 +82,8 @@ def test_frontend_stage_labels_match_the_backend_order():
 
     js = Path("web/static/app.js").read_text(encoding="utf-8")
     # Frontend mới dùng metadata có nhãn tiếng Việt thay vì map trạng thái cũ.
-    video_order = re.search(r'const STAGES = \[([^\]]+)\]', js)
-    text_order = re.search(r'const TEXT_STAGES = \[([^\]]+)\]', js)
+    video_order = re.search(r'video_dubbing: \[([^\]]+)\]', js)
+    text_order = re.search(r'text_to_voice: \[([^\]]+)\]', js)
     assert video_order is not None and re.findall(r'"(\w+)"', video_order.group(1)) == STAGES
     assert text_order is not None and re.findall(r'"(\w+)"', text_order.group(1)) == list(TEXT_STAGES)
     for stage in (*STAGES, *TEXT_STAGES):

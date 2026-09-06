@@ -40,11 +40,30 @@ def test_text_form_has_language_voice_preview_and_submit_controls():
 
 def test_text_jobs_render_typed_audio_downloads_and_text_stages():
     assert 'job.job_type === "text_to_voice"' in JS
-    assert '/download/wav' in JS
-    assert '/download/mp3' in JS
+    assert "artifactLabel(artifact)" in JS
+    assert "/artifacts/${encodeURIComponent(artifact.id)}" in JS
     assert 'prepare: { label:' in JS
     assert 'export: { label:' in JS
     assert "const TEXT_STAGES" in JS
+
+
+def test_queue_copy_is_generic_and_job_cards_render_type_and_language():
+    assert "JOB QUEUE" in HTML
+    assert "HÀNG ĐỢI XỬ LÝ" in HTML
+    assert "VIDEO QUEUE" not in HTML
+    assert "jobTypeLabel(job)" in JS
+    assert "languageName(job.target_language)" in JS
+
+
+def test_graph_stage_definitions_cover_both_job_types():
+    assert 'video_dubbing: ["extract", "transcribe", "translate", "synthesize", "subtitle", "assemble", "mux"]' in JS
+    assert 'text_to_voice: ["prepare", "synthesize", "assemble", "export"]' in JS
+    assert "renderGraphNodes(job)" in JS
+
+
+def test_done_job_renders_public_artifacts_instead_of_hardcoded_video_links():
+    assert "job.artifacts" in JS
+    assert "/artifacts/${encodeURIComponent(artifact.id)}" in JS
 
 
 def test_language_catalog_failure_does_not_block_other_boot_requests():

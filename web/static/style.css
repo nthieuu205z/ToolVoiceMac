@@ -161,6 +161,10 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 700; letter-spacing: -.025e
 .job-card.selected::before { content: ""; position: absolute; top: 13px; bottom: 13px; left: -1px; width: 2px; border-radius: 2px; background: var(--blue); box-shadow: 0 0 14px var(--blue); }
 @keyframes card-in { from { opacity: .98; } to { opacity: 1; } }
 .job-card-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.job-card-identity { min-width: 0; flex: 1; }
+.job-badge-row, .selected-type-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 6px; color: var(--text-faint); font-size: 9px; }
+.job-type-badge { display: inline-flex; align-items: center; min-height: 22px; padding: 0 7px; color: var(--blue-bright); border: 1px solid rgba(85,167,255,.25); border-radius: 999px; background: var(--blue-soft); font: 9px var(--mono); white-space: nowrap; }
+.job-language { color: var(--text-dim); }
 .job-name { max-width: 63%; overflow: hidden; font-size: 13px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .job-voice { margin-top: 4px; overflow: hidden; color: var(--text-faint); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .job-status { display: inline-flex; align-items: center; gap: 6px; padding: 5px 8px; border-radius: 999px; font: 9px var(--mono); white-space: nowrap; }
@@ -306,7 +310,7 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 700; letter-spacing: -.025e
 .graph-scroll-shell { position: relative; min-width: 0; }
 
 .graph-scroll-shell::after { content: ""; position: absolute; z-index: 4; top: 1px; right: 1px; bottom: 1px; width: 30px; border-radius: 0 15px 15px 0; background: linear-gradient(90deg, transparent, rgba(7,11,18,.78)); opacity: 0; pointer-events: none; transition: opacity .25s ease; }
-.graph-track { position: relative; --graph-gap: clamp(18px, 2vw, 28px); display: grid; grid-template-columns: repeat(7, minmax(110px, 1fr)); column-gap: var(--graph-gap); align-items: stretch; min-height: 166px; padding: 17px 7px 15px; border: 1px solid rgba(160,180,204,.1); border-radius: 15px; background: linear-gradient(180deg, rgba(10,18,29,.82), rgba(7,11,18,.62)); box-shadow: inset 0 1px rgba(255,255,255,.025); }
+.graph-track { position: relative; --graph-gap: clamp(18px, 2vw, 28px); --graph-columns: 7; display: grid; grid-template-columns: repeat(var(--graph-columns), minmax(110px, 1fr)); column-gap: var(--graph-gap); align-items: stretch; min-height: 166px; padding: 17px 7px 15px; border: 1px solid rgba(160,180,204,.1); border-radius: 15px; background: linear-gradient(180deg, rgba(10,18,29,.82), rgba(7,11,18,.62)); box-shadow: inset 0 1px rgba(255,255,255,.025); }
 .graph-step { position: relative; display: flex; min-width: 0; align-items: center; }
 .graph-node { position: relative; z-index: 2; width: 100%; min-height: 101px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 16px 7px 12px; border: 1px solid var(--line); border-radius: 13px; background: linear-gradient(180deg, rgba(20,30,44,.98), rgba(9,15,24,.98)); text-align: center; box-shadow: 0 8px 20px rgba(0,0,0,.16), inset 0 1px rgba(255,255,255,.035); transition: border-color .45s, background .45s, box-shadow .45s, transform .45s var(--ease); }
 .graph-node::before { content: ""; position: absolute; inset: 5px; border: 1px solid rgba(160,180,204,.06); border-radius: 9px; pointer-events: none; }
@@ -415,7 +419,7 @@ select:focus { border-color: var(--blue); box-shadow: 0 0 0 3px rgba(85,167,255,
   .graph-scroll-shell { overflow: hidden; border-radius: 15px; }
   .graph-scroll-shell::after { opacity: 1; }
   .graph-scroll-shell.is-at-end::after { opacity: 0; }
-  .graph-track { overflow-x: auto; grid-template-columns: repeat(7, minmax(105px, 1fr)); min-width: 820px; scrollbar-width: thin; scrollbar-color: rgba(85,167,255,.42) transparent; }
+  .graph-track { overflow-x: auto; grid-template-columns: repeat(var(--graph-columns), minmax(105px, 1fr)); min-width: calc(var(--graph-columns) * 117px); scrollbar-width: thin; scrollbar-color: rgba(85,167,255,.42) transparent; }
   .graph-track { --graph-gap: 18px; }
   .graph-track::-webkit-scrollbar { height: 5px; }
   .graph-track::-webkit-scrollbar-track { background: transparent; }
