@@ -658,6 +658,8 @@ class JobManager:
             result = runner(backend, progress, job.cancel_event.is_set)
             if not isinstance(result, JobRunResult):
                 raise TypeError("Job runner must return JobRunResult")
+            if job.cancel_requested:
+                raise JobCancelledError()
             publishing = True
             with job.telemetry_lock:
                 job.publish_result(result)

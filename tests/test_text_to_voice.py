@@ -270,6 +270,31 @@ def test_cancellation_before_mp3_encode_removes_unpublished_wav(
     assert not (tmp_path / "output.mp3").exists()
 
 
+def test_cancellation_during_mp3_encode_removes_unpublished_outputs(
+    tmp_path, monkeypatch
+):
+    cancel_now = False
+
+    def cancel_during_encode(_wav_path, mp3_path):
+        nonlocal cancel_now
+        Path(mp3_path).write_bytes(b"complete-but-unpublished")
+        cancel_now = True
+
+    monkeypatch.setattr(text_to_voice, "encode_mp3", cancel_during_encode)
+
+    with pytest.raises(JobCancelledError):
+        run_text_to_voice(
+            FakeSynth(outputs=[pcm(0.1)]),
+            "Hello.",
+            tmp_path,
+            TextToVoiceOptions("voice", "en-US"),
+            should_cancel=lambda: cancel_now,
+        )
+
+    assert not (tmp_path / "output.wav").exists()
+    assert not (tmp_path / "output.mp3").exists()
+
+
 def test_mp3_failure_removes_both_unpublished_outputs(tmp_path, monkeypatch):
     def fail_after_partial_write(_wav_path, mp3_path):
         Path(mp3_path).write_bytes(b"partial")

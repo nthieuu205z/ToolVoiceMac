@@ -144,6 +144,29 @@ def test_unexpected_crash_still_surfaces_to_the_ui(tmp_path):
     assert "Lỗi không lường trước" in job.message
 
 
+def test_cancellation_after_runner_returns_wins_before_result_publication(tmp_path):
+    def runner(backend, progress, should_cancel):
+        job.cancel_event.set()
+        return _result(tmp_path, attempted=1, spoken=1)
+
+    manager = JobManager(max_workers=1)
+    job = Job(
+        id="cancel-before-publish",
+        filename="a.mp4",
+        input_label="a.mp4",
+        job_type="video_dubbing",
+        target_language="vi-VN",
+        workdir=tmp_path,
+        voice_id="Kore",
+    )
+    manager._jobs[job.id] = job
+
+    manager._run(job, lambda: None, runner)
+
+    assert job.status == "cancelled"
+    assert job.artifacts == []
+
+
 def test_malformed_result_finishes_as_error_without_partial_publication(tmp_path):
     artifact = JobArtifact(
         "video", "video", "a_vi.mp4", "video/mp4", str(tmp_path / "output.mp4")

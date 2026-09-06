@@ -203,6 +203,7 @@ def run_text_to_voice(
         progress("export", 0.0, "Đang xuất WAV và MP3")
         _raise_if_cancelled(should_cancel)
         encode_mp3(wav_path, mp3_path)
+        _raise_if_cancelled(should_cancel)
         progress("export", 1.0, "Đã xuất WAV và MP3")
     except Exception:
         _remove_unpublished_outputs(wav_path, mp3_path)
