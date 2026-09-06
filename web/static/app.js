@@ -42,6 +42,7 @@ function voiceInitials(name) { return String(name || "?").trim().split(/\s+/).ma
 function stageLabel(stage) { return STAGE_META[stage]?.label || stage || "Đang chờ"; }
 function stagesFor(job) { return STAGES_BY_JOB_TYPE[job?.job_type] || STAGES_BY_JOB_TYPE.video_dubbing; }
 function jobTypeLabel(job) { return job?.job_type === "text_to_voice" ? "Text → Voice" : "Video Dubbing"; }
+function jobTypeIcon(job) { return job?.job_type === "text_to_voice" ? "icon-sound" : "icon-film"; }
 function languageName(code) { return state.languages.find(language => language.code === code)?.display_name || code || "—"; }
 function jobTitle(job) { return job?.input_label || job?.filename || job?.job_id || "Không tên"; }
 function artifactLabel(artifact) { return ({ video: "Video", subtitle: "SRT", wav: "WAV", mp3: "MP3" })[artifact?.kind] || artifact?.kind?.toUpperCase() || "File"; }
@@ -139,7 +140,7 @@ function jobCardMarkup(job) {
   const remove = !ACTIVE_STATUSES.has(job.status) ? `<button class="mini-button danger" type="button" data-action="delete-job" data-job-id="${escapeAttr(job.job_id)}">Xóa</button>` : "";
   const downloads = job.status === "done" ? `${artifactLinks(job)}${remove}` : remove;
   const title = jobTitle(job);
-  return { statusMeta, percent, action, downloads, html: `<div class="job-card-top"><div class="job-card-identity"><div class="job-badge-row"><span class="job-type-badge">${escapeHtml(jobTypeLabel(job))}</span><span class="job-language">${escapeHtml(languageName(job.target_language))}</span></div><div class="job-name" title="${escapeAttr(title)}">${escapeHtml(title)}</div><div class="job-voice">${escapeHtml(voiceName(job.voice_id))}</div></div><span class="job-status ${statusMeta.tone}"><span class="status-dot ${statusMeta.tone === "running" ? "active" : statusMeta.tone === "done" ? "live" : statusMeta.tone === "error" ? "error" : "neutral"}"></span>${statusMeta.label}</span></div><div class="job-progress-row"><span>${escapeHtml(job.message || stageLabel(job.stage))}</span><strong>${percent}%</strong></div><div class="job-progress"><div class="progress-track"><span style="width:${Math.max(0, Math.min(100, Number(job.percent) || 0))}%"></span></div></div><div class="job-card-foot"><span>${escapeHtml(stageLabel(job.stage))}</span><span class="mono">${fmtDuration(job.elapsed_seconds)} · ${relativeTime(job.created_at)}</span></div>${(action || downloads) ? `<div class="job-card-actions">${action}${downloads}</div>` : ""}` };
+  return { statusMeta, percent, action, downloads, html: `<div class="job-card-top"><div class="job-card-identity"><div class="job-badge-row"><span class="job-type-badge"><span class="job-type-icon icon ${jobTypeIcon(job)}" aria-hidden="true"></span>${escapeHtml(jobTypeLabel(job))}</span><span class="job-language">${escapeHtml(languageName(job.target_language))}</span></div><div class="job-name" title="${escapeAttr(title)}">${escapeHtml(title)}</div><div class="job-voice">${escapeHtml(voiceName(job.voice_id))}</div></div><span class="job-status ${statusMeta.tone}"><span class="status-dot ${statusMeta.tone === "running" ? "active" : statusMeta.tone === "done" ? "live" : statusMeta.tone === "error" ? "error" : "neutral"}"></span>${statusMeta.label}</span></div><div class="job-progress-row"><span>${escapeHtml(job.message || stageLabel(job.stage))}</span><strong>${percent}%</strong></div><div class="job-progress"><div class="progress-track"><span style="width:${Math.max(0, Math.min(100, Number(job.percent) || 0))}%"></span></div></div><div class="job-card-foot"><span>${escapeHtml(stageLabel(job.stage))}</span><span class="mono">${fmtDuration(job.elapsed_seconds)} · ${relativeTime(job.created_at)}</span></div>${(action || downloads) ? `<div class="job-card-actions">${action}${downloads}</div>` : ""}` };
 }
 function updateJobCard(card, job, {rebuild = false} = {}) {
   const { statusMeta, percent, html } = jobCardMarkup(job);
@@ -238,7 +239,7 @@ function renderSelectedJob() {
   $("#selectedFilename").textContent = jobTitle(job);
   $("#selectedJobType").textContent = jobTypeLabel(job);
   $("#selectedLanguage").textContent = languageName(job.target_language);
-  $("#selectedFileIcon").className = `file-icon ${job.job_type === "text_to_voice" ? "icon-sound" : "icon-film"}`;
+  $("#selectedFileIcon").className = `file-icon icon ${jobTypeIcon(job)}`;
   $("#selectedVoice").textContent = `Giọng: ${voiceName(job.voice_id)}`;
   $("#selectedStage").textContent = stageLabel(job.stage);
   $("#selectedPercent").textContent = `${Math.round(job.percent || 0)}%`;
@@ -301,7 +302,7 @@ function renderGraph(job) {
   text.textContent = knownStage ? job.message || STAGE_META[job.stage]?.detail || "Đang xử lý" : job.message || "Stage này không còn trong phiên bản hiện tại.";
   timer.textContent = fmtDuration(job.stage_elapsed_seconds);
   const ttsNode = $(".graph-node[data-stage=\"synthesize\"] small"); if (ttsNode) ttsNode.textContent = job.engine ? `${job.engine} · ${job.device || "local"}` : STAGE_META.synthesize.short;
-  updateGraphFlow(knownStage ? job : null);
+  updateGraphFlow(knownStage || job.status === "done" ? job : null);
 }
 function syncGraphScrollAffordance() {
   const shell = $(".graph-scroll-shell");

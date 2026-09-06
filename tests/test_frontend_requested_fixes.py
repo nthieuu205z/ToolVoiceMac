@@ -28,6 +28,12 @@ def test_finished_job_marks_export_node_completed():
     assert 'job.status === "done" || index < flowIndex' in source
 
 
+def test_finished_unknown_stage_still_completes_every_graph_rail():
+    source = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'updateGraphFlow(knownStage || job.status === "done" ? job : null)' in source
+
+
 def test_selected_voice_label_fits_inside_action_group():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
 

@@ -35,5 +35,5 @@ def test_voice_cards_reserve_space_for_name_and_actions():
 def test_static_asset_version_includes_the_multilingual_composer_release():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
 
-    assert 'href="style.css?v=20260906-39"' in html
-    assert 'src="app.js?v=20260906-39"' in html
+    assert 'href="style.css?v=20260906-40"' in html
+    assert 'src="app.js?v=20260906-40"' in html

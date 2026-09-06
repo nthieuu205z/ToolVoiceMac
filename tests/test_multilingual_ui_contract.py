@@ -51,8 +51,19 @@ def test_queue_copy_is_generic_and_job_cards_render_type_and_language():
     assert "JOB QUEUE" in HTML
     assert "HÀNG ĐỢI XỬ LÝ" in HTML
     assert "VIDEO QUEUE" not in HTML
+    assert "Hàng đợi video" not in HTML
     assert "jobTypeLabel(job)" in JS
     assert "languageName(job.target_language)" in JS
+    assert "jobTypeIcon(job)" in JS
+    assert "job-type-icon" in JS
+
+
+def test_job_type_icons_render_for_queue_and_selected_job():
+    assert 'className = `file-icon icon ${jobTypeIcon(job)}`' in JS
+    assert ".job-type-icon.icon-sound" in CSS
+    assert ".file-icon.icon-sound" in CSS
+    assert ".job-card-actions { display: flex; flex-wrap: wrap;" in CSS
+    assert ".selected-actions { display: flex; flex-wrap: wrap;" in CSS
 
 
 def test_graph_stage_definitions_cover_both_job_types():
