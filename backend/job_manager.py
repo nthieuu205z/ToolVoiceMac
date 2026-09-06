@@ -52,9 +52,11 @@ def _safe_int(value) -> int:
 
 
 def _direct_child_path(
-    workdir: Path, value: str, *, require_relative: bool
+    workdir: Path, value: object, *, require_relative: bool
 ) -> Path | None:
     """Resolve one artifact path without allowing traversal, nesting, or symlinks."""
+    if not isinstance(value, str) or not value:
+        return None
     try:
         raw = Path(value)
         if not value or ".." in raw.parts or (require_relative and raw.is_absolute()):
@@ -69,6 +71,25 @@ def _direct_child_path(
     except (OSError, RuntimeError, ValueError):
         return None
     return resolved if resolved.parent == root else None
+
+
+def _validated_artifacts(workdir: Path, artifacts: list[JobArtifact]) -> list[JobArtifact]:
+    """Materialize a result's artifacts only after every persisted field is safe."""
+    validated: list[JobArtifact] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, JobArtifact):
+            raise TypeError("Job result artifacts must be JobArtifact values")
+        values = {
+            name: getattr(artifact, name)
+            for name in ("id", "kind", "filename", "media_type", "path")
+        }
+        if not all(isinstance(value, str) and value.strip() for value in values.values()):
+            raise TypeError("Job artifact fields must be non-empty strings")
+        path = _direct_child_path(workdir, values["path"], require_relative=False)
+        if path is None:
+            raise ValueError("Job artifact path must be a safe direct child")
+        validated.append(JobArtifact(**{**values, "path": str(path)}))
+    return validated
 
 
 def _restore_artifacts(data: dict, workdir: Path) -> list[JobArtifact]:
@@ -390,9 +411,7 @@ class Job:
 
     def publish_result(self, result: JobRunResult) -> None:
         """Set terminal result fields before the terminal status is exposed."""
-        artifacts = list(result.artifacts)
-        if not all(isinstance(artifact, JobArtifact) for artifact in artifacts):
-            raise TypeError("Job result artifacts must be JobArtifact values")
+        artifacts = _validated_artifacts(self.workdir, list(result.artifacts))
         warnings = list(result.warnings)
         if not all(isinstance(warning, str) for warning in warnings):
             raise TypeError("Job result warnings must be strings")

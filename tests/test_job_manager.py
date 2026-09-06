@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import threading
+from typing import cast
+
+import pytest
 
 from backend import job_manager as jm
 from backend.job_contracts import JobArtifact, JobRunResult
@@ -169,6 +172,110 @@ def test_malformed_result_finishes_as_error_without_partial_publication(tmp_path
     assert persisted["status"] == "error"
     assert persisted["finished_at"] is not None
     assert persisted["artifacts"] == []
+
+
+def _assert_result_rejected(job: Job, workdir) -> None:
+    assert job.status == "error"
+    assert job.finished_at is not None
+    assert job.artifacts == []
+    assert job.warnings == []
+    assert job.attempted_count == 0
+    assert job.spoken_count == 0
+    assert job.degraded is False
+
+    persisted = json.loads((workdir / "job.json").read_text(encoding="utf-8"))
+    assert persisted["status"] == "error"
+    assert persisted["finished_at"] is not None
+    assert persisted["artifacts"] == []
+    assert persisted["warnings"] == []
+    assert persisted["attempted_count"] == 0
+    assert persisted["spoken_count"] == 0
+    assert persisted["degraded"] is False
+
+
+@pytest.mark.parametrize("field", ["id", "kind", "filename", "media_type", "path"])
+@pytest.mark.parametrize("value", [None, "", "   "])
+def test_malformed_artifact_field_finishes_as_error_without_partial_publication(
+    tmp_path, field, value
+):
+    artifact_fields = {
+        "id": "video",
+        "kind": "video",
+        "filename": "a_vi.mp4",
+        "media_type": "video/mp4",
+        "path": str(tmp_path / "output.mp4"),
+    }
+    artifact_fields[field] = value
+
+    def malformed_runner(backend, progress, should_cancel):
+        return JobRunResult(
+            artifacts=[JobArtifact(**artifact_fields)],
+            warnings=["must not publish"],
+            attempted_count=4,
+            spoken_count=1,
+        )
+
+    manager = JobManager(max_workers=1)
+    job = _wait(manager, _start(manager, tmp_path, malformed_runner))
+
+    _assert_result_rejected(job, tmp_path)
+
+
+@pytest.mark.parametrize("unsafe_path", ["../outside.mp4", "nested/output.mp4"])
+def test_unsafe_artifact_path_finishes_as_error_without_partial_publication(
+    tmp_path, unsafe_path
+):
+    def malformed_runner(backend, progress, should_cancel):
+        return JobRunResult(
+            artifacts=[
+                JobArtifact("video", "video", "a_vi.mp4", "video/mp4", unsafe_path)
+            ],
+            warnings=["must not publish"],
+            attempted_count=4,
+            spoken_count=1,
+        )
+
+    manager = JobManager(max_workers=1)
+    job = _wait(manager, _start(manager, tmp_path, malformed_runner))
+
+    _assert_result_rejected(job, tmp_path)
+
+
+def test_non_artifact_result_item_finishes_as_error_without_partial_publication(tmp_path):
+    def malformed_runner(backend, progress, should_cancel):
+        return JobRunResult(
+            artifacts=cast(list[JobArtifact], [object()]),
+            warnings=["must not publish"],
+            attempted_count=4,
+            spoken_count=1,
+        )
+
+    manager = JobManager(max_workers=1)
+    job = _wait(manager, _start(manager, tmp_path, malformed_runner))
+
+    _assert_result_rejected(job, tmp_path)
+
+
+def test_symlink_artifact_path_finishes_as_error_without_partial_publication(tmp_path):
+    outside = tmp_path.parent / "outside.mp4"
+    outside.write_bytes(b"video")
+    symlink = tmp_path / "output.mp4"
+    symlink.symlink_to(outside)
+
+    def malformed_runner(backend, progress, should_cancel):
+        return JobRunResult(
+            artifacts=[
+                JobArtifact("video", "video", "a_vi.mp4", "video/mp4", str(symlink))
+            ],
+            warnings=["must not publish"],
+            attempted_count=4,
+            spoken_count=1,
+        )
+
+    manager = JobManager(max_workers=1)
+    job = _wait(manager, _start(manager, tmp_path, malformed_runner))
+
+    _assert_result_rejected(job, tmp_path)
 
 
 def test_finalization_exception_cannot_escape_the_manager_lifecycle(tmp_path, monkeypatch):
