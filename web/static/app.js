@@ -4,7 +4,9 @@
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
 const STAGES = ["extract", "transcribe", "translate", "synthesize", "subtitle", "assemble", "mux"];
+const TEXT_STAGES = ["prepare", "synthesize", "assemble", "export"];
 const STAGE_META = {
+  prepare: { label: "Chuẩn bị nội dung", detail: "Chia câu và chuẩn hóa văn bản" },
   extract: { label: "Tách âm thanh", detail: "Chuẩn bị audio từ video" },
   transcribe: { label: "Nhận diện giọng nói", detail: "Whisper tạo transcript" },
   translate: { label: "Dịch thuật", detail: "Gemini chuyển ngữ tiếng Việt" },
@@ -12,6 +14,7 @@ const STAGE_META = {
   subtitle: { label: "Tạo phụ đề", detail: "Căn cue theo giọng đọc" },
   assemble: { label: "Ghép âm thanh", detail: "Đặt các segment vào timeline" },
   mux: { label: "Xuất video", detail: "Đóng gói video hoàn tất" },
+  export: { label: "Xuất âm thanh", detail: "Đóng gói WAV và MP3" },
 };
 const STAGE_LABELS = Object.fromEntries(Object.entries(STAGE_META).map(([stage, meta]) => [stage, `Đang ${meta.label.toLowerCase()}`]));
 const ACTIVE_STATUSES = new Set(["queued", "running", "cancelling"]);
@@ -21,7 +24,9 @@ const STATUS_META = {
   done: { label: "Hoàn tất", tone: "done" }, error: { label: "Lỗi", tone: "error" },
 };
 const MAX_BYTES = 8 * 1024 ** 3;
-const state = { voices: [], jobs: [], selectedJobId: null, eventSources: new Map(), lastEvents: [], connected: false, refreshing: false, uploadBusy: false, cloneBusy: false, voiceSource: "", previewToken: 0 };
+const JOB_MODES = ["video", "text"];
+const LANGUAGE_RATES = { "vi-VN": 16.6, "en-US": 14.0 };
+const state = { voices: [], languages: [], jobs: [], selectedJobId: null, eventSources: new Map(), lastEvents: [], connected: false, refreshing: false, uploadBusy: false, textBusy: false, cloneBusy: false, voiceSource: "", previewToken: 0, jobMode: "video", selectedFile: null, textPreviewController: null, textPreviewUrl: "", jobDrafts: { video: { language: localStorage.getItem("sub.video.language") || "vi-VN", voiceId: localStorage.getItem("sub.video.voice") || "" }, text: { language: localStorage.getItem("sub.text.language") || "vi-VN", voiceId: localStorage.getItem("sub.text.voice") || "", text: sessionStorage.getItem("sub.text.draft") || "" } } };
 
 function fmtBytes(bytes) { if (!Number.isFinite(Number(bytes))) return "—"; const value = Number(bytes); if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`; if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(1)} MB`; if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`; return `${value} B`; }
 function fmtDuration(seconds) { if (!Number.isFinite(Number(seconds))) return "—"; const total = Math.max(0, Math.round(Number(seconds))); const hours = Math.floor(total / 3600); const minutes = Math.floor((total % 3600) / 60); const secs = total % 60; if (hours) return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`; return `${String(minutes).padStart(2, "0")}:${String(secs).padStart(2, "0")}`; }
@@ -38,45 +43,81 @@ function toast(message, tone = "") { const item = document.createElement("div");
 function setConnection(connected, message = connected ? "Đã kết nối" : "Mất kết nối") { state.connected = connected; const pill = $("#connectionPill"); pill.classList.toggle("connected", connected); $("#connectionPill .status-dot").className = `status-dot ${connected ? "live" : "error"}`; $("#connectionText").textContent = message; }
 async function apiJson(url, options = {}) { const response = await fetch(url, options); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.detail || `Request thất bại (${response.status})`); return body; }
 
+function voicesForLanguage(code) { return state.voices.filter(voice => (voice.supported_languages || []).includes(code)); }
+function fillLanguages(select, selected) { select.textContent = ""; state.languages.forEach(language => { const option = document.createElement("option"); option.value = language.code; option.textContent = language.display_name; select.append(option); }); select.value = state.languages.some(language => language.code === selected) ? selected : state.languages[0]?.code || "vi-VN"; }
+function fillVoices(select, language, selected) { const voices = voicesForLanguage(language); select.textContent = ""; voices.forEach(voice => { const option = document.createElement("option"); option.value = voice.id; option.textContent = voice.custom ? `${voice.display_name} · Nhân bản` : voice.display_name; select.append(option); }); select.value = voices.some(voice => voice.id === selected) ? selected : voices[0]?.id || ""; return select.value; }
+function activateJobMode(mode, { focus = false } = {}) { state.jobMode = JOB_MODES.includes(mode) ? mode : "video"; $$("[role=tab]", $("#jobModeTabs")).forEach(tab => { const active = tab.dataset.mode === state.jobMode; tab.setAttribute("aria-selected", String(active)); tab.tabIndex = active ? 0 : -1; if (focus && active) tab.focus(); }); $("#videoJobPanel").hidden = state.jobMode !== "video"; $("#textJobPanel").hidden = state.jobMode !== "text"; }
+function setupJobTabs() { const tabs = $$("[role=tab]", $("#jobModeTabs")); tabs.forEach((tab, index) => { tab.addEventListener("click", () => activateJobMode(tab.dataset.mode)); tab.addEventListener("keydown", event => { let next = index; if (event.key === "ArrowRight") next = (index + 1) % tabs.length; else if (event.key === "ArrowLeft") next = (index - 1 + tabs.length) % tabs.length; else if (event.key === "Home") next = 0; else if (event.key === "End") next = tabs.length - 1; else return; event.preventDefault(); activateJobMode(tabs[next].dataset.mode, { focus: true }); }); }); activateJobMode(state.jobMode); }
+async function loadLanguages() { try { state.languages = await apiJson("/api/languages"); } catch (error) { state.languages = [{ code: "vi-VN", display_name: "Tiếng Việt" }, { code: "en-US", display_name: "English (US)" }]; toast("Không tải được catalog ngôn ngữ; đang dùng danh sách mặc định.", "error"); } fillLanguages($("#videoLanguage"), state.jobDrafts.video.language); fillLanguages($("#textLanguage"), state.jobDrafts.text.language); fillLanguages($("#voiceLabLanguage"), localStorage.getItem("sub.voiceLab.language") || "vi-VN"); }
+function syncComposerVoices({ announceReset = false } = {}) { const videoLanguage = $("#videoLanguage").value; const textLanguage = $("#textLanguage").value; const oldVideo = state.jobDrafts.video.voiceId; const oldText = state.jobDrafts.text.voiceId; state.jobDrafts.video.language = videoLanguage; state.jobDrafts.text.language = textLanguage; state.jobDrafts.video.voiceId = fillVoices($("#videoVoiceSelect"), videoLanguage, oldVideo); state.jobDrafts.text.voiceId = fillVoices($("#textVoiceSelect"), textLanguage, oldText); localStorage.setItem("sub.video.voice", state.jobDrafts.video.voiceId); localStorage.setItem("sub.text.voice", state.jobDrafts.text.voiceId); if (announceReset && ((oldVideo && oldVideo !== state.jobDrafts.video.voiceId) || (oldText && oldText !== state.jobDrafts.text.voiceId))) announce("Giọng đã được đổi vì không hỗ trợ ngôn ngữ vừa chọn."); updateUploadState(); updateTextState(); }
+
 async function loadVoices() {
   try {
-    state.voices = await apiJson("/api/voices"); state.voiceSource = "api"; const select = $("#voiceSelect"); select.textContent = "";
-    state.voices.forEach(voice => { const option = document.createElement("option"); option.value = voice.id; option.textContent = voice.custom ? `${voice.display_name} · Nhân bản` : voice.display_name; select.append(option); });
-    const saved = localStorage.getItem("sub.voice"); if (saved && state.voices.some(voice => voice.id === saved)) select.value = saved; if (!select.value && state.voices[0]) select.value = state.voices[0].id; renderVoiceLab(); updateUploadState();
-  } catch (error) { state.voiceSource = "error"; $("#voiceSelect").innerHTML = "<option value=\"\">Không tải được danh sách giọng</option>"; $("#voiceList").innerHTML = '<div class="event-empty">Không tải được danh sách giọng.</div>'; toast(error.message, "error"); }
+    state.voices = await apiJson("/api/voices");
+    state.voiceSource = "api";
+    syncComposerVoices();
+    renderVoiceLab();
+  } catch (error) {
+    state.voiceSource = "error";
+    $("#videoVoiceSelect").innerHTML = '<option value="">Không tải được danh sách giọng</option>';
+    $("#textVoiceSelect").innerHTML = '<option value="">Không tải được danh sách giọng</option>';
+    $("#voiceList").innerHTML = '<div class="event-empty">Không tải được danh sách giọng.</div>';
+    toast(error.message, "error");
+  }
 }
 
-function previewUrl(voice) { return voice.preview_url || `/api/voices/${encodeURIComponent(voice.id)}/preview`; }
+function previewUrl(voice, language = "vi-VN") { return voice.preview_urls?.[language] || voice.preview_url || `/api/voices/${encodeURIComponent(voice.id)}/preview?language=${encodeURIComponent(language)}`; }
 function renderVoiceLab() {
-  const list = $("#voiceList"); list.textContent = "";
-  const custom = state.voices.filter(voice => voice.custom); $("#voiceCount").textContent = `${custom.length} giọng`;
-  if (!custom.length) { list.innerHTML = '<div class="event-empty">Chưa có giọng nhân bản. Tạo giọng đầu tiên ở nút bên phải.</div>'; return; }
+  const list = $("#voiceList");
+  const language = $("#voiceLabLanguage")?.value || "vi-VN";
+  list.textContent = "";
+  const custom = state.voices.filter(voice => voice.custom && (voice.supported_languages || []).includes(language));
+  $("#voiceCount").textContent = `${custom.length} giọng`;
+  if (!custom.length) { list.innerHTML = '<div class="event-empty">Chưa có giọng nhân bản hỗ trợ ngôn ngữ này.</div>'; return; }
   custom.forEach(voice => {
-    const selected = $("#voiceSelect").value === voice.id; const item = document.createElement("div"); item.className = `voice-item${selected ? " selected" : ""}`;
+    const selected = $("#videoVoiceSelect").value === voice.id || $("#textVoiceSelect").value === voice.id;
+    const previewStatus = voice.preview_status?.[language] || "error";
+    const item = document.createElement("div"); item.className = `voice-item${selected ? " selected" : ""}`;
     const avatar = document.createElement("span"); avatar.className = "voice-avatar"; avatar.textContent = voiceInitials(voice.display_name);
-    const body = document.createElement("div"); body.className = "voice-item-main"; const name = document.createElement("strong"); name.textContent = voice.display_name; name.title = voice.display_name; const id = document.createElement("span"); id.textContent = voice.id; id.title = voice.id; const status = document.createElement("small"); status.className = voice.preview_url ? "voice-ready" : "voice-missing"; status.textContent = voice.preview_url ? "Demo sẵn sàng" : "Chưa có demo"; body.append(name, id, status); item.append(avatar, body);
+    const body = document.createElement("div"); body.className = "voice-item-main";
+    const name = document.createElement("strong"); name.textContent = voice.display_name; name.title = voice.display_name;
+    const id = document.createElement("span"); id.textContent = voice.id; id.title = voice.id;
+    const status = document.createElement("small"); status.className = previewStatus === "ready" ? "voice-ready" : "voice-missing"; status.textContent = previewStatus === "pending" ? "Đang tạo bản nghe thử" : previewStatus === "ready" ? "Demo sẵn sàng" : "Chưa có demo";
+    body.append(name, id, status); item.append(avatar, body);
     const actions = document.createElement("div"); actions.className = "voice-actions";
-    const select = document.createElement("button"); select.type = "button"; select.className = "voice-select-button"; select.textContent = selected ? "Đang chọn" : "Chọn"; select.setAttribute("aria-label", `Chọn giọng ${voice.display_name}`); select.addEventListener("click", () => { $("#voiceSelect").value = voice.id; $("#voiceSelect").dispatchEvent(new Event("change")); }); actions.append(select);
-    const preview = document.createElement("button"); preview.type = "button"; preview.className = "voice-preview"; preview.innerHTML = '<span class="icon icon-play" aria-hidden="true"></span><span>Nghe thử</span>'; preview.setAttribute("aria-label", `Nghe thử giọng ${voice.display_name}`); preview.disabled = !voice.preview_url; preview.addEventListener("click", () => togglePreview(voice, preview)); actions.append(preview);
+    const select = document.createElement("button"); select.type = "button"; select.className = "voice-select-button"; select.textContent = selected ? "Đang chọn" : "Chọn"; select.setAttribute("aria-label", `Chọn giọng ${voice.display_name}`); select.addEventListener("click", () => { const target = state.jobMode === "text" ? $("#textVoiceSelect") : $("#videoVoiceSelect"); target.value = voice.id; target.dispatchEvent(new Event("change")); }); actions.append(select);
+    const preview = document.createElement("button"); preview.type = "button"; preview.className = "voice-preview"; preview.innerHTML = `<span class="icon icon-play" aria-hidden="true"></span><span>${previewStatus === "error" ? "Tạo lại demo" : "Nghe thử"}</span>`; preview.setAttribute("aria-label", `${previewStatus === "error" ? "Tạo lại demo" : "Nghe thử"} giọng ${voice.display_name}`); preview.disabled = previewStatus === "pending"; preview.addEventListener("click", () => previewStatus === "error" ? regenerateVoicePreview(voice, language) : togglePreview(voice, preview, language)); actions.append(preview);
     const remove = document.createElement("button"); remove.type = "button"; remove.className = "voice-delete"; remove.textContent = "×"; remove.title = `Xóa ${voice.display_name}`; remove.setAttribute("aria-label", `Xóa giọng ${voice.display_name}`); remove.addEventListener("click", () => deleteVoice(voice)); actions.append(remove); item.append(actions); list.append(item);
   });
 }
 let activePreview = null;
 function resetPreviewButton(button) { if (!button) return; button.classList.remove("playing"); button.innerHTML = '<span class="icon icon-play" aria-hidden="true"></span><span>Nghe thử</span>'; }
-function togglePreview(voice, button) {
+function stopActivePreview() { if (!activePreview) return; activePreview.audio.pause(); resetPreviewButton(activePreview.button); activePreview = null; }
+function togglePreview(voice, button, language = "vi-VN") {
   if (activePreview?.button === button) { activePreview.audio.pause(); activePreview = null; resetPreviewButton(button); return; }
   if (activePreview) { activePreview.audio.pause(); resetPreviewButton(activePreview.button); }
   const token = ++state.previewToken;
-  const audio = new Audio(previewUrl(voice)); audio.preload = "metadata";
+  const audio = new Audio(previewUrl(voice, language)); audio.preload = "metadata";
   activePreview = { audio, button, token };
   button.classList.add("playing"); button.innerHTML = '<span class="icon icon-pause" aria-hidden="true"></span><span>Đang phát</span>';
   const fail = () => { if (activePreview?.token !== token) return; toast("Chưa có file demo cho giọng này.", "error"); activePreview = null; resetPreviewButton(button); };
   audio.addEventListener("error", fail); audio.addEventListener("ended", () => { if (activePreview?.token !== token) return; activePreview = null; resetPreviewButton(button); }); audio.play().catch(fail);
 }
-async function deleteVoice(voice) { if (!window.confirm(`Xóa giọng “${voice.display_name}”?`)) return; try { await apiJson(`/api/voices/custom/${encodeURIComponent(voice.id)}`, { method: "DELETE" }); if ($("#voiceSelect").value === voice.id) $("#voiceSelect").value = ""; await loadVoices(); toast("Đã xóa giọng nhân bản.", "success"); } catch (error) { toast(error.message, "error"); } }
+async function pollVoicePreview(voiceId, language) {
+  try {
+    state.voices = await apiJson("/api/voices");
+    syncComposerVoices(); renderVoiceLab();
+    const voice = state.voices.find(item => item.id === voiceId);
+    if (voice?.preview_status?.[language] === "pending") window.setTimeout(() => pollVoicePreview(voiceId, language), 1800);
+  } catch (_) { window.setTimeout(() => pollVoicePreview(voiceId, language), 2600); }
+}
+async function regenerateVoicePreview(voice, language) { voice.preview_status = { ...(voice.preview_status || {}), [language]: "pending" }; renderVoiceLab(); try { await apiJson(`/api/voices/${encodeURIComponent(voice.id)}/preview/regenerate?language=${encodeURIComponent(language)}`, { method: "POST" }); toast("Đang tạo lại bản nghe thử."); window.setTimeout(() => pollVoicePreview(voice.id, language), 1800); } catch (error) { voice.preview_status[language] = "error"; renderVoiceLab(); toast(error.message, "error"); } }
+async function deleteVoice(voice) { if (!window.confirm(`Xóa giọng “${voice.display_name}”?`)) return; try { await apiJson(`/api/voices/custom/${encodeURIComponent(voice.id)}`, { method: "DELETE" }); await loadVoices(); toast("Đã xóa giọng nhân bản.", "success"); } catch (error) { toast(error.message, "error"); } }
 function setupVoiceLab() {
-  const toggle = $("#toggleVoiceForm"); const form = $("#voiceForm"); toggle.addEventListener("click", () => { form.hidden = !form.hidden; toggle.setAttribute("aria-expanded", String(!form.hidden)); });
-  form.addEventListener("submit", async event => { event.preventDefault(); if (state.cloneBusy) return; const name = $("#cloneName").value.trim(); const audio = $("#cloneAudio").files[0]; const hint = $("#voiceFormHint"); if (!name || !audio) { hint.textContent = "Nhập tên và chọn audio mẫu trước khi tạo."; return; } state.cloneBusy = true; $("#createVoiceButton").disabled = true; $("#createVoiceButton").textContent = "Đang tạo…"; hint.textContent = "Đang chuẩn hóa audio và đăng ký giọng local…"; try { const data = new FormData(); data.append("name", name); data.append("audio", audio); const voice = await apiJson("/api/voices/custom", { method: "POST", body: data }); await loadVoices(); $("#voiceSelect").value = voice.id; $("#voiceSelect").dispatchEvent(new Event("change")); form.reset(); form.hidden = true; toggle.setAttribute("aria-expanded", "false"); hint.textContent = "Nên dùng audio 3–8 giây, một người nói, ít tạp âm."; toast("Đã tạo giọng nhân bản OmniVoice.", "success"); } catch (error) { hint.textContent = error.message; toast(error.message, "error"); } finally { state.cloneBusy = false; $("#createVoiceButton").disabled = false; $("#createVoiceButton").textContent = "Tạo giọng"; } });
+  const toggle = $("#toggleVoiceForm"); const form = $("#voiceForm");
+  $("#voiceLabLanguage").addEventListener("change", event => { localStorage.setItem("sub.voiceLab.language", event.target.value); stopActivePreview(); renderVoiceLab(); });
+  toggle.addEventListener("click", () => { form.hidden = !form.hidden; toggle.setAttribute("aria-expanded", String(!form.hidden)); });
+  form.addEventListener("submit", async event => { event.preventDefault(); if (state.cloneBusy) return; const name = $("#cloneName").value.trim(); const audio = $("#cloneAudio").files[0]; const hint = $("#voiceFormHint"); if (!name || !audio) { hint.textContent = "Nhập tên và chọn audio mẫu trước khi tạo."; return; } state.cloneBusy = true; $("#createVoiceButton").disabled = true; $("#createVoiceButton").textContent = "Đang tạo…"; hint.textContent = "Đang chuẩn hóa audio và đăng ký giọng local…"; try { const data = new FormData(); data.append("name", name); data.append("audio", audio); const voice = await apiJson("/api/voices/custom", { method: "POST", body: data }); await loadVoices(); const target = state.jobMode === "text" ? $("#textVoiceSelect") : $("#videoVoiceSelect"); target.value = voice.id; target.dispatchEvent(new Event("change")); form.reset(); form.hidden = true; toggle.setAttribute("aria-expanded", "false"); hint.textContent = "Nên dùng audio 3–8 giây, một người nói, ít tạp âm."; toast("Đã tạo giọng nhân bản OmniVoice.", "success"); } catch (error) { hint.textContent = error.message; toast(error.message, "error"); } finally { state.cloneBusy = false; $("#createVoiceButton").disabled = false; $("#createVoiceButton").textContent = "Tạo giọng"; } });
 }
 
 async function loadSystemHealth() { const stack = $("#healthStack"); stack.textContent = ""; try { const data = await apiJson("/api/model"); const models = Array.isArray(data.models) ? data.models : []; const rows = models.map(model => ({ label: model.key === "omnivoice" ? "OmniVoice" : model.key === "whisper" ? "Whisper STT" : model.label, status: model.ready ? "Sẵn sàng" : model.status === "downloading" ? "Đang tải" : "Chưa sẵn sàng", tone: model.ready ? "live" : model.status === "error" ? "error" : "warn" })); rows.push({ label: "API server", status: "Online", tone: "live" }); rows.forEach(row => { const item = document.createElement("div"); item.className = "health-row"; item.innerHTML = `<span class="status-dot ${row.tone}"></span><span></span><em></em>`; item.children[1].textContent = row.label; item.children[2].textContent = row.status; stack.append(item); }); } catch (_) { stack.innerHTML = '<div class="health-row"><span class="status-dot error"></span><span>API server</span><em>Offline</em></div>'; } }
@@ -86,7 +127,8 @@ function jobCardMarkup(job) {
   const percent = Math.round(job.percent || 0);
   const action = ACTIVE_STATUSES.has(job.status) ? `<button class="mini-button danger" type="button" data-action="cancel" data-job-id="${escapeAttr(job.job_id)}">${job.status === "cancelling" ? "Đang dừng…" : "Hủy"}</button>` : "";
   const remove = !ACTIVE_STATUSES.has(job.status) ? `<button class="mini-button danger" type="button" data-action="delete-job" data-job-id="${escapeAttr(job.job_id)}">Xóa</button>` : "";
-  const downloads = job.status === "done" ? `<a class="mini-button" href="/api/jobs/${encodeURIComponent(job.job_id)}/download/video">Video</a><a class="mini-button" href="/api/jobs/${encodeURIComponent(job.job_id)}/download/srt">SRT</a>${remove}` : remove;
+  const isTextJob = job.job_type === "text_to_voice";
+  const downloads = job.status === "done" ? (isTextJob ? `<a class="mini-button" href="/api/jobs/${encodeURIComponent(job.job_id)}/download/wav">WAV</a><a class="mini-button" href="/api/jobs/${encodeURIComponent(job.job_id)}/download/mp3">MP3</a>${remove}` : `<a class="mini-button" href="/api/jobs/${encodeURIComponent(job.job_id)}/download/video">Video</a><a class="mini-button" href="/api/jobs/${encodeURIComponent(job.job_id)}/download/srt">SRT</a>${remove}`) : remove;
   return { statusMeta, percent, action, downloads, html: `<div class="job-card-top"><div><div class="job-name" title="${escapeAttr(job.filename)}">${escapeHtml(job.filename)}</div><div class="job-voice">${escapeHtml(voiceName(job.voice_id))}</div></div><span class="job-status ${statusMeta.tone}"><span class="status-dot ${statusMeta.tone === "running" ? "active" : statusMeta.tone === "done" ? "live" : statusMeta.tone === "error" ? "error" : "neutral"}"></span>${statusMeta.label}</span></div><div class="job-progress-row"><span>${escapeHtml(job.message || stageLabel(job.stage))}</span><strong>${percent}%</strong></div><div class="job-progress"><div class="progress-track"><span style="width:${Math.max(0, Math.min(100, Number(job.percent) || 0))}%"></span></div></div><div class="job-card-foot"><span>${escapeHtml(stageLabel(job.stage))}</span><span class="mono">${fmtDuration(job.elapsed_seconds)} · ${relativeTime(job.created_at)}</span></div>${(action || downloads) ? `<div class="job-card-actions">${action}${downloads}</div>` : ""}` };
 }
 function updateJobCard(card, job, {rebuild = false} = {}) {
@@ -207,20 +249,22 @@ function renderSelectedJob() {
     actions.append(cancel);
   }
   if (job.status === "done") {
-    const video = document.createElement("a");
-    video.className = "button primary small";
-    video.href = `/api/jobs/${encodeURIComponent(job.job_id)}/download/video`;
-    video.textContent = "Tải video";
-    const srt = document.createElement("a");
-    srt.className = "button small";
-    srt.href = `/api/jobs/${encodeURIComponent(job.job_id)}/download/srt`;
-    srt.textContent = "Tải SRT";
-    actions.append(video, srt);
+    const kinds = job.job_type === "text_to_voice" ? [["wav", "Tải WAV"], ["mp3", "Tải MP3"]] : [["video", "Tải video"], ["srt", "Tải SRT"]];
+    kinds.forEach(([kind, label], index) => { const link = document.createElement("a"); link.className = `button${index === 0 ? " primary" : ""} small`; link.href = `/api/jobs/${encodeURIComponent(job.job_id)}/download/${kind}`; link.textContent = label; actions.append(link); });
   }
   renderGraph(job);
 }
 function renderGraph(job) {
-  const currentIndex = job ? STAGES.indexOf(job.stage) : -1;
+  const jobStages = job?.job_type === "text_to_voice" ? TEXT_STAGES : STAGES;
+  const currentIndex = job ? jobStages.indexOf(job.stage) : -1;
+  if (job?.job_type === "text_to_voice") {
+    $$(".graph-node").forEach(node => { node.classList.remove("completed", "active", "failed"); node.setAttribute("aria-current", "false"); });
+    $("#graphDetailTitle").textContent = `${stageLabel(job.stage)} · ${Math.round(job.percent || 0)}%`;
+    $("#graphDetailText").textContent = job.message || STAGE_META[job.stage]?.detail || "Đang xử lý";
+    $("#graphDetailTime").textContent = fmtDuration(job.stage_elapsed_seconds);
+    updateGraphFlow(null);
+    return;
+  }
   $$(".graph-node").forEach((node, index) => {
     const completed = Boolean(job) && (job.status === "done" ? index <= currentIndex : index < currentIndex);
     node.classList.toggle("completed", completed);
@@ -277,7 +321,8 @@ function setupUpload() {
   ["dragleave", "drop"].forEach(type => dropzone.addEventListener(type, event => { event.preventDefault(); dropzone.classList.remove("drag"); }));
   dropzone.addEventListener("drop", event => setUploadFile([...event.dataTransfer.files].find(file => isVideoFile(file)) || null));
   dropzone.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); input.click(); } });
-  $("#voiceSelect").addEventListener("change", event => { if (event.target.value) localStorage.setItem("sub.voice", event.target.value); updateUploadState(); renderVoiceLab(); });
+  $("#videoLanguage").addEventListener("change", event => { state.jobDrafts.video.language = event.target.value; localStorage.setItem("sub.video.language", event.target.value); stopActivePreview(); syncComposerVoices({ announceReset: true }); });
+  $("#videoVoiceSelect").addEventListener("change", event => { state.jobDrafts.video.voiceId = event.target.value; localStorage.setItem("sub.video.voice", event.target.value); stopActivePreview(); updateUploadState(); renderVoiceLab(); });
   $("#uploadForm").addEventListener("submit", submitUpload);
   $("#cancelUploadButton").addEventListener("click", () => { if (uploadRequest) uploadRequest.abort(); });
   $("[data-action=\"open-upload\"]").addEventListener("click", () => { $("#uploadPanel").scrollIntoView({ behavior: "smooth", block: "center" }); });
@@ -297,7 +342,7 @@ function setUploadFile(file) {
   selected.hidden = !state.selectedFile; selected.textContent = state.selectedFile?.name || ""; updateUploadState();
 }
 function updateUploadState() {
-  const ready = Boolean(state.selectedFile && $("#voiceSelect").value && !state.uploadBusy);
+  const ready = Boolean(state.selectedFile && $("#videoVoiceSelect").value && !state.uploadBusy);
   const button = $("#startButton");
   button.disabled = !ready;
   button.setAttribute("aria-disabled", String(!ready));
@@ -308,7 +353,7 @@ function updateUploadState() {
 function submitUpload(event) {
   event.preventDefault();
   clearUploadError();
-  const voiceId = $("#voiceSelect").value;
+  const voiceId = $("#videoVoiceSelect").value;
   if (!state.selectedFile || !voiceId || state.uploadBusy) {
     showUploadError(!state.selectedFile ? "Hãy chọn một video trước." : "Hãy chọn giọng đọc trước.", true);
     return;
@@ -328,6 +373,7 @@ function submitUpload(event) {
   form.append("video", state.selectedFile);
   form.append("filename", state.selectedFile.name);
   form.append("voice_id", voiceId);
+  form.append("target_language", $("#videoLanguage").value);
   xhr.upload.onprogress = event => {
     if (!event.lengthComputable) return;
     const pct = event.loaded / event.total * 100;
@@ -365,7 +411,63 @@ function submitUpload(event) {
   xhr.send(form);
 }
 
+function showTextError(message, focus = false) { const box = $("#textJobError"); $("#textJobErrorText").textContent = message; box.hidden = false; if (focus) box.focus(); }
+function clearTextError() { $("#textJobError").hidden = true; $("#textJobErrorText").textContent = ""; }
+function abortTextPreview() { if (state.textPreviewController) state.textPreviewController.abort(); state.textPreviewController = null; stopActivePreview(); if (state.textPreviewUrl) URL.revokeObjectURL(state.textPreviewUrl); state.textPreviewUrl = ""; if ($("#textPreviewButton")) { $("#textPreviewButton").disabled = false; $("#textPreviewButton").textContent = "Nghe thử nội dung"; } }
+function updateTextState() {
+  const text = $("#textInput").value;
+  const trimmed = text.trim();
+  const language = $("#textLanguage").value || "vi-VN";
+  const seconds = trimmed ? Math.ceil(trimmed.length / (LANGUAGE_RATES[language] || LANGUAGE_RATES["vi-VN"])) : 0;
+  $("#textCharacterCount").textContent = `${text.length.toLocaleString("vi-VN")} / 50.000 ký tự`;
+  $("#textDurationEstimate").textContent = `Ước tính ${fmtDuration(seconds)}`;
+  const ready = Boolean(trimmed && $("#textVoiceSelect").value);
+  $("#textStartButton").disabled = !ready || state.textBusy;
+  $("#textFixedPreviewButton").disabled = !$("#textVoiceSelect").value;
+  $("#textPreviewButton").disabled = !ready;
+}
+function selectedTextVoice() { return state.voices.find(voice => voice.id === $("#textVoiceSelect").value) || null; }
+function playTextFixedPreview() { const voice = selectedTextVoice(); if (!voice) return; togglePreview(voice, $("#textFixedPreviewButton"), $("#textLanguage").value); }
+async function previewText() {
+  const text = $("#textInput").value.trim(); const voiceId = $("#textVoiceSelect").value; const language = $("#textLanguage").value;
+  if (!text || !voiceId) return;
+  const button = $("#textPreviewButton");
+  if (activePreview?.button === button) { abortTextPreview(); return; }
+  abortTextPreview(); clearTextError();
+  const controller = new AbortController(); state.textPreviewController = controller; button.disabled = true; button.textContent = "Đang tạo bản nghe thử…"; announce("Đang tạo bản nghe thử nội dung.");
+  try {
+    const response = await fetch(`/api/voices/${encodeURIComponent(voiceId)}/preview-text`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, language }), signal: controller.signal });
+    if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Request thất bại (${response.status})`); }
+    const blob = await response.blob(); if (controller.signal.aborted) return;
+    state.textPreviewUrl = URL.createObjectURL(blob); const audio = new Audio(state.textPreviewUrl); const token = ++state.previewToken; activePreview = { audio, button, token }; button.textContent = "Dừng nghe thử"; announce("Đang phát bản nghe thử nội dung.");
+    const finish = () => { if (activePreview?.token !== token) return; activePreview = null; button.textContent = "Nghe thử nội dung"; updateTextState(); announce("Đã dừng bản nghe thử nội dung."); };
+    audio.addEventListener("ended", finish); audio.addEventListener("error", finish); await audio.play();
+  } catch (error) { if (error.name !== "AbortError") { showTextError(error.message, true); button.textContent = "Thử lại nghe thử"; toast(error.message, "error"); } }
+  finally { if (state.textPreviewController === controller) state.textPreviewController = null; updateTextState(); }
+}
+async function submitTextJob(event) {
+  event.preventDefault(); clearTextError();
+  const text = $("#textInput").value.trim(); const voiceId = $("#textVoiceSelect").value; const language = $("#textLanguage").value;
+  if (!text || !voiceId || state.textBusy) { showTextError(!text ? "Hãy nhập nội dung cần đọc." : "Hãy chọn giọng đọc trước.", true); return; }
+  abortTextPreview(); state.textBusy = true; updateTextState(); $("#textStartButton").textContent = "Đang thêm…";
+  try {
+    const body = await apiJson("/api/jobs/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, voice_id: voiceId, language }) });
+    $("#textInput").value = ""; state.jobDrafts.text.text = ""; sessionStorage.removeItem("sub.text.draft"); await refreshJobs(); if (body.job_id) selectJob(body.job_id); announce("Đã thêm job giọng đọc vào hàng đợi."); toast("Đã thêm job giọng đọc vào hàng đợi.", "success");
+  } catch (error) { showTextError(error.message, true); toast(error.message, "error"); }
+  finally { state.textBusy = false; $("#textStartButton").textContent = "Tạo giọng đọc"; updateTextState(); }
+}
+function setupTextComposer() {
+  $("#textInput").value = state.jobDrafts.text.text;
+  $("#textInput").addEventListener("input", event => { state.jobDrafts.text.text = event.target.value; sessionStorage.setItem("sub.text.draft", event.target.value); abortTextPreview(); updateTextState(); });
+  $("#textLanguage").addEventListener("change", event => { state.jobDrafts.text.language = event.target.value; localStorage.setItem("sub.text.language", event.target.value); abortTextPreview(); syncComposerVoices({ announceReset: true }); });
+  $("#textVoiceSelect").addEventListener("change", event => { state.jobDrafts.text.voiceId = event.target.value; localStorage.setItem("sub.text.voice", event.target.value); abortTextPreview(); updateTextState(); renderVoiceLab(); });
+  $("#textFixedPreviewButton").addEventListener("click", playTextFixedPreview);
+  $("#textPreviewButton").addEventListener("click", previewText);
+  $("#textJobForm").addEventListener("submit", submitTextJob);
+  updateTextState();
+}
+
 $("#refreshButton").addEventListener("click", () => { loadSystemHealth(); loadVoices(); refreshJobs(); loadGeminiSettings(); });
 $("#clearEvents").addEventListener("click", () => { state.lastEvents = []; renderEvents(null); });
 document.addEventListener("click", event => { const button = event.target.closest("[data-action=\"cancel\"]"); if (button) { event.stopPropagation(); cancelJob(button.dataset.jobId); return; } const remove = event.target.closest("[data-action=\"delete-job\"]"); if (remove) { event.stopPropagation(); const job = state.jobs.find(item => item.job_id === remove.dataset.jobId); if (job) deleteJob(job); } });
-(async function init() { setupUpload(); setupVoiceLab(); setupGeminiSettings(); setupShutdown(); const graphTrack = $("#pipelineGraph"); window.addEventListener("resize", syncGraphScrollAffordance); window.addEventListener("resize", syncJobListViewport); graphTrack?.addEventListener("scroll", syncGraphScrollAffordance, { passive: true }); await Promise.all([loadVoices(), loadSystemHealth(), refreshJobs()]); syncGraphScrollAffordance(); window.setInterval(() => { const job = state.jobs.find(item => item.job_id === state.selectedJobId); if (job && ACTIVE_STATUSES.has(job.status)) { renderSelectedJob(); updateMetrics(); } }, 1000); })();
+(async function init() { setupJobTabs(); setupUpload(); setupTextComposer(); setupVoiceLab(); setupGeminiSettings(); setupShutdown(); const graphTrack = $("#pipelineGraph"); window.addEventListener("resize", syncGraphScrollAffordance); window.addEventListener("resize", syncJobListViewport); graphTrack?.addEventListener("scroll", syncGraphScrollAffordance, { passive: true }); await Promise.all([loadLanguages(), loadVoices(), loadSystemHealth(), refreshJobs()]); syncComposerVoices(); syncGraphScrollAffordance(); window.setInterval(() => { const job = state.jobs.find(item => item.job_id === state.selectedJobId); if (job && ACTIVE_STATUSES.has(job.status)) { renderSelectedJob(); updateMetrics(); } }, 1000); })();

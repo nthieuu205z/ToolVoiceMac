@@ -5,7 +5,7 @@ def test_new_job_upload_contract_is_wired_end_to_end():
     html = Path("web/static/index.html").read_text(encoding="utf-8")
     js = Path("web/static/app.js").read_text(encoding="utf-8")
 
-    for element_id in ("uploadForm", "videoInput", "voiceSelect", "startButton", "uploadProgress", "uploadBar"):
+    for element_id in ("uploadForm", "videoInput", "videoLanguage", "videoVoiceSelect", "startButton", "uploadProgress", "uploadBar"):
         assert f'id="{element_id}"' in html
     assert '$("#uploadForm").addEventListener("submit", submitUpload)' in js
     assert 'xhr.open("POST", "/api/jobs")' in js

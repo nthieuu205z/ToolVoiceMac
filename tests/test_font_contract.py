@@ -32,8 +32,8 @@ def test_voice_cards_reserve_space_for_name_and_actions():
     assert "text-overflow: ellipsis" in css
 
 
-def test_static_asset_version_changes_after_typography_fix():
+def test_static_asset_version_includes_the_multilingual_composer_release():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
 
-    assert 'href="style.css?v=20260905-36"' in html
-    assert 'src="app.js?v=20260905-36"' in html
+    assert 'href="style.css?v=20260906-37"' in html
+    assert 'src="app.js?v=20260906-37"' in html
