@@ -287,6 +287,7 @@ h2 { margin-bottom: 0; font-size: 16px; font-weight: 700; letter-spacing: -.025e
 .button.primary { color: #07111e; border-color: var(--blue); background: var(--blue); box-shadow: 0 5px 18px rgba(85,167,255,.17); }
 .button.primary:hover:not(:disabled) { background: var(--blue-bright); }
 .button.small { min-height: 33px; padding: 0 11px; font-size: 11px; }
+.preview-actions .button.small { min-height: 44px; }
 .button.danger { color: var(--red); border-color: rgba(255,119,119,.28); }
 .button:disabled { cursor: not-allowed; opacity: .45; }
 .settings-panel { margin-top: 13px; padding: 20px; }

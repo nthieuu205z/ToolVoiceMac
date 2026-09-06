@@ -20,6 +20,18 @@ from pipeline.voices import voices_for  # noqa: E402
 OK, BAD, INFO = "✓", "✗", "·"
 
 
+def capabilities_summary() -> str:
+    """Return the deterministic user-facing feature summary."""
+    return "\n".join(
+        (
+            "Ngôn ngữ hỗ trợ: vi-VN và en-US.",
+            "Video Dubbing: chọn ngôn ngữ đích; bước dịch cần Gemini.",
+            "Text → Voice: dùng chung hàng đợi; Edge/local không cần Gemini.",
+            "Kết quả âm thanh: WAV và MP3; có nghe thử cố định/theo nội dung.",
+        )
+    )
+
+
 def check_ffmpeg() -> bool:
     set_binaries(settings.ffmpeg_bin, settings.ffprobe_bin)
     try:
@@ -86,9 +98,9 @@ def check_tts() -> bool:
 
 
 def check_translate() -> bool:
-    """Bước dịch luôn cần Gemini, nhưng chỉ 1–4 lượt gọi cho cả video."""
+    """Video Dubbing needs Gemini translation; Text -> Voice does not."""
     if not settings.gemini_api_key:
-        print(f"{BAD} Chưa có GEMINI_API_KEY (bước dịch cần nó) — tạo .env từ .env.example.")
+        print(f"{BAD} Chưa có GEMINI_API_KEY (Video Dubbing cần dịch) — Text → Voice Edge/local vẫn dùng được.")
         return False
 
     from google import genai
@@ -129,6 +141,7 @@ def _explain(code, vertex: bool) -> None:
 
 if __name__ == "__main__":
     print("── Kiểm tra môi trường ToolVietSub ──\n")
+    print(capabilities_summary(), "\n")
     results = [check_ffmpeg(), check_stt(), check_tts(), check_translate()]
     print()
     if all(results):

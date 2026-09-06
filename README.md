@@ -1,12 +1,13 @@
 # ToolVietSub
 
-Lồng tiếng Việt và tạo phụ đề tiếng Việt cho video, xử lý cục bộ trên máy bạn; bước dịch
-và tùy chọn `edge-tts` cần kết nối mạng. Giọng nhân bản dùng OmniVoice để
-phần giọng đọc chạy offline.
+Công cụ đa ngôn ngữ `vi-VN` / `en-US` với hai workflow dùng chung một hàng đợi:
 
-Đưa vào một video bất kỳ (.mp4, .mkv, .mov…), nhận về:
-- video với âm thanh gốc **được thay hẳn** bằng giọng đọc tiếng Việt
-- file phụ đề `.srt` tiếng Việt riêng
+- **Video Dubbing:** tải video, chọn ngôn ngữ đích và giọng; nhận video đã thay track âm thanh cùng phụ đề `.srt` theo ngôn ngữ đã chọn.
+- **Text → Voice:** nhập tối đa **50.000 ký tự**, chọn ngôn ngữ/giọng; nhận cả **WAV** và **MP3**.
+
+Media, job metadata và Text → Voice input được xử lý/lưu cục bộ. Video Dubbing luôn cần
+Gemini cho bước dịch; Text → Voice bằng Edge hoặc engine local không cần khóa Gemini.
+`edge-tts` vẫn cần Internet, còn giọng nhân bản OmniVoice chạy offline sau khi tải model.
 
 Mặc định xử lý cục bộ phần media; bước dịch gọi Gemini và `edge-tts` gọi dịch vụ giọng đọc
 qua mạng:
@@ -125,13 +126,21 @@ Script này xác nhận ffmpeg, khóa API, và **kiểm tra tên model đã cấ
 
 ---
 
-## Chạy
+## Chạy và sử dụng
 
 ```bash
 ./.venv/bin/uvicorn backend.main:app --port 8000
 ```
 
-Mở <http://localhost:8000>, kéo thả video vào, chọn giọng đọc, bấm **Bắt đầu chuyển đổi**.
+Mở <http://localhost:8000>. Trong **New Job**:
+
+1. Chọn tab **Video Dubbing** để kéo thả video, chọn `vi-VN` hoặc `en-US`, chọn giọng và bắt đầu xử lý.
+2. Chọn tab **Text → Voice** để nhập nội dung (tối đa **50.000 ký tự**), chọn ngôn ngữ/giọng, nghe giọng mẫu hoặc nghe thử chính nội dung rồi tạo job.
+3. Cả hai workflow đi vào cùng **Job Queue**, dùng chung SSE, hủy/xóa, lịch sử khởi động lại và Execution Graph thích ứng.
+4. Voice Lab có bộ chọn ngôn ngữ; demo cố định được tạo theo từng ngôn ngữ, còn nghe thử nội dung không lưu text thành artifact công khai.
+
+Danh sách giọng tự lọc theo capability `supported_languages`; đổi ngôn ngữ sẽ giữ giọng nếu
+tương thích, nếu không chọn giọng tương thích đầu tiên.
 
 Tùy chọn — tạo file nghe thử giọng đọc để bấm nghe ngay trên giao diện (mỗi giọng tốn một lần gọi TTS, chỉ cần chạy một lần):
 
@@ -149,13 +158,13 @@ Hoặc chạy thẳng bằng dòng lệnh, không qua giao diện:
 
 ## Cách hoạt động
 
-Bảy bước, chạy tuần tự trong `pipeline/runner.py`:
+Video Dubbing có bảy bước chạy tuần tự trong `pipeline/runner.py`:
 
 | Bước | Việc làm |
 |---|---|
 | `extract` | ffmpeg tách audio ra WAV mono 16 kHz |
 | `transcribe` | **ffmpeg** khoanh vùng có tiếng, **Whisper** chép lời + mốc từng từ → tách thành **từng CÂU** đặt đúng thời điểm |
-| `translate` | Gemini dịch sang tiếng Việt (các lô chạy **song song**), giữ nguyên số dòng và thứ tự |
+| `translate` | Gemini dịch sang **ngôn ngữ đích đã chọn** (các lô chạy **song song**), giữ nguyên số dòng và thứ tự |
 | `synthesize` | OmniVoice/edge-tts đọc **từng câu**, gộp lô trên GPU khi smoke test đã xác nhận |
 | `subtitle` | Dựng `.srt`, cue bám theo thời lượng giọng đọc thật |
 | `assemble` | Đặt từng đoạn vào đúng mốc thời gian trên nền im lặng dài bằng video |
@@ -210,7 +219,8 @@ dài nhất **4,72s → 0,86s**, tiếng Việt bám hình **75% → 85%**, số
 - **Chống TTS "chạy hoang" + đọc lại lượt xấu.** Model tự hồi quy thỉnh thoảng bịa lời khi đầu vào quá ngắn; pipeline đặt trần độ dài, cắt kèm fade và có thể đọc lại lượt có khoảng lặng bất thường. Gemini TTS tính tiền theo lượt nên để tắt.
 - **Lời thoại không được đưa trần vào TTS.** Gặp câu hỏi, model tưởng đó là câu lệnh và định trả lời (`"Model tried to generate text, but it should only be used for TTS"`). Pipeline bọc mỗi lượt trong một câu lệnh đọc nguyên văn — đã kiểm chứng là câu lệnh đó không bị đọc thành tiếng.
 - **Số dòng dịch phải khớp tuyệt đối.** Lệch một dòng là lệch giờ toàn bộ phần sau, nên hệ thống thử lại một lần rồi báo lỗi thay vì xuất ra video sai tiếng. Prompt dịch cũng cấm lược ý: khung thời gian chỉ quyết định *cách diễn đạt*, không quyết định *lượng thông tin* — câu dài ra đã có cơ chế mượn khoảng lặng ở trên lo.
-- **Nhiều video cùng lúc.** Trang chủ là form thêm video + danh sách job bên dưới; mỗi video một thẻ với tiến trình riêng. Tối đa `MAX_CONCURRENT_JOBS` (mặc định 2) video chạy đồng thời, video nộp thêm xếp hàng chờ. Trần đặt thấp có chủ ý: Whisper/OmniVoice bị khóa suy luận toàn cục và edge-tts bị trần 2 request đồng thời, nên job thứ ba chủ yếu chen hàng chứ không nhanh thêm.
+- **Nhiều job cùng lúc.** Video Dubbing và Text → Voice dùng chung hàng đợi; mỗi job có thẻ và tiến trình riêng. Tối đa `MAX_CONCURRENT_JOBS` (mặc định 2) job chạy đồng thời, job nộp thêm xếp hàng chờ. Trần đặt thấp có chủ ý: Whisper/OmniVoice bị khóa suy luận toàn cục và edge-tts bị trần 2 request đồng thời, nên job thứ ba chủ yếu chen hàng chứ không nhanh thêm.
+- **Mở rộng ngôn ngữ:** thêm registry trong `pipeline/languages.py`, khai báo capability cho giọng/provider, thêm preview text và contract tests cho code canonical. Không thêm option UI đơn lẻ vì backend registry là nguồn sự thật.
 - **Danh sách job sống sót qua mọi thứ.** Mỗi job ghi `job.json` vào thư mục của nó; đóng tab, quay lại trang chủ, hay khởi động lại server đều thấy nguyên danh sách và tải lại được kết quả cũ. Job đang chạy dở lúc server chết được đánh dấu lỗi kèm lời nhắn "hãy chạy lại" — không bao giờ hiện "đang chạy" ma.
 - **Hủy được giữa chừng.** Bấm **Hủy** trên thẻ job (hoặc `POST /api/jobs/{id}/cancel`). Việc hủy là *hợp tác*: máy chủ không giết thread giữa chừng — lúc đó ffmpeg có thể đang ghi file và ONNX đang chạy — mà đặt cờ rồi để pipeline tự dừng ở mốc an toàn gần nhất. Đo thực tế trên video 19 phút: bấm hủy ở đoạn 2/64, dừng hẳn sau **4 giây**. Job còn xếp hàng thì hủy tức thì.
 
@@ -289,6 +299,16 @@ Cờ chỉnh trong `.env` (đều có mặc định an toàn):
 ```
 
 Toàn bộ test dùng một Gemini giả (`tests/conftest.py`) — **không gọi API thật, không tốn token**, và không cần ffmpeg.
+
+Provider smoke là opt-in vì gọi mạng/model thật:
+
+```bash
+RUN_PROVIDER_SMOKE=1 ./.venv/bin/python -m pytest -q -m provider_smoke
+```
+
+Edge English chạy khi có mạng. Gemini chỉ chạy khi `GEMINI_API_KEY` đã cấu hình. OmniVoice
+clone chỉ chạy khi đặt `PROVIDER_SMOKE_CLONE_VOICE_ID` thành ID của một giọng local mà bạn
+có quyền sử dụng; thiếu precondition nào thì test tương ứng báo `SKIP`, không được tính là pass.
 
 ---
 

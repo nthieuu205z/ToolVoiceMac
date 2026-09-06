@@ -2,6 +2,34 @@ from __future__ import annotations
 
 import sys
 import types
+from pathlib import Path
+
+from scripts import check_setup
+
+
+def test_setup_output_names_both_supported_languages_and_audio_formats():
+    output = check_setup.capabilities_summary()
+    assert output.count("\n") == 3
+    assert "vi-VN" in output
+    assert "en-US" in output
+    assert "Video Dubbing" in output
+    assert "Text → Voice" in output
+    assert "WAV" in output
+    assert "MP3" in output
+
+
+def test_user_documentation_covers_multilingual_job_workflows():
+    readme = Path("README.md").read_text(encoding="utf-8")
+    mac = Path("HUONG_DAN_MAC.md").read_text(encoding="utf-8")
+    env = Path(".env.example").read_text(encoding="utf-8")
+    for text in (readme, mac):
+        assert "Video Dubbing" in text
+        assert "Text → Voice" in text
+        assert "vi-VN" in text and "en-US" in text
+        assert "WAV" in text and "MP3" in text
+        assert "50.000" in text
+    assert "RUN_PROVIDER_SMOKE=1" in readme
+    assert "PROVIDER_SMOKE_CLONE_VOICE_ID" in env
 
 
 def test_check_tts_checks_omnivoice_even_with_gemini_presets(monkeypatch):

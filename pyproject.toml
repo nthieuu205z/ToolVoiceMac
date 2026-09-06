@@ -37,6 +37,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "provider_smoke: opt-in calls to real network/local model providers",
+]
 
 [tool.setuptools]
 packages = ["backend", "pipeline"]

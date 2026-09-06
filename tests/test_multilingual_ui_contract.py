@@ -87,6 +87,10 @@ def test_job_mode_drafts_have_separate_storage_keys():
     assert 'sessionStorage.removeItem("sub.text.draft")' in JS
 
 
+def test_voice_options_advertise_their_supported_languages():
+    assert "option.dataset.languages = voice.supported_languages.join" in JS
+
+
 def test_voice_lab_has_a_language_selector_and_preview_retry_contract():
     assert 'id="voiceLabLanguage"' in HTML
     assert "preview_status" in JS
@@ -107,3 +111,4 @@ def test_multilingual_composer_has_accessible_responsive_styles():
     assert "min-height: 44px" in CSS
     assert "min-height: 160px" in CSS
     assert "prefers-reduced-motion" in CSS
+    assert ".preview-actions .button.small { min-height: 44px; }" in CSS

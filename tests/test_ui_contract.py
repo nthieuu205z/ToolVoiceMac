@@ -13,6 +13,11 @@ def test_new_job_upload_contract_is_wired_end_to_end():
     assert 'form.append("voice_id", voiceId)' in js
 
 
+def test_page_declares_an_inline_favicon_without_an_extra_request():
+    html = Path("web/static/index.html").read_text(encoding="utf-8")
+    assert 'rel="icon" href="data:image/svg+xml,' in html
+
+
 def test_voice_lab_has_select_preview_and_delete_actions():
     html = Path("web/static/index.html").read_text(encoding="utf-8")
     js = Path("web/static/app.js").read_text(encoding="utf-8")

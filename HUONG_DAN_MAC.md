@@ -128,7 +128,8 @@ Mở <http://localhost:8000>. Server chỉ nghe trên máy của bạn (localhos
 ## 7. Lần chạy đầu tiên
 
 1. Vào mục **"Model trên máy"** trên giao diện, bấm tải model OmniVoice (~3,3 GB), đợi 100%.
-2. Chạy thử một video **ngắn** trước. Xác nhận terminal ghi `Đang nạp OmniVoice trên mps`
+2. Chạy thử một video **ngắn** trước. Trong tab **Video Dubbing**, chọn ngôn ngữ đích
+   `vi-VN` hoặc `en-US`. Xác nhận terminal ghi `Đang nạp OmniVoice trên mps`
    và job tạo đủ audio; nếu process thoát với `SIGSEGV (-11)`, báo lại log để điều tra
    phiên bản PyTorch/model trước khi chạy video dài.
 3. Muốn xem GPU bận không: mở **Activity Monitor** → tab **Energy** (hoặc **GPU History**)
@@ -136,18 +137,23 @@ Mở <http://localhost:8000>. Server chỉ nghe trên máy của bạn (localhos
 
 ## 8. Cách dùng hằng ngày
 
-Giao diện y hệt bản Windows:
+Giao diện có hai workflow trong **New Job**:
 
-- **Thêm video**: kéo thả (.mp4, .mkv, .mov… tối đa 8 GB), có phần trăm tải lên.
+- **Video Dubbing**: kéo thả (.mp4, .mkv, .mov… tối đa 8 GB), chọn `vi-VN` hoặc `en-US`, có phần trăm tải lên. Workflow này cần Gemini để dịch sang ngôn ngữ đích.
+- **Text → Voice**: nhập tối đa **50.000 ký tự**, chọn ngôn ngữ/giọng, nghe giọng mẫu hoặc nghe thử nội dung, rồi nhận cả **WAV** và **MP3**. Edge hoặc OmniVoice local có thể chạy workflow này mà không cần Gemini key.
 - **Chọn giọng**: các giọng Edge/Gemini dựng sẵn và giọng clone OmniVoice.
+- **Voice Lab**: chọn ngôn ngữ nghe thử; trạng thái demo hiển thị đang tạo/sẵn sàng/tạo lại.
 - **Nhân bản giọng**: bấm *＋ Nhân bản giọng*, đặt tên + tải mẫu audio **3–8 giây, một
   người nói, ít tạp âm**. Chỉ dùng giọng bạn có quyền sử dụng.
-- **Bắt đầu chuyển đổi**: theo dõi 7 bước trên thẻ job. Chạy song song tối đa 2 video,
-  video nộp thêm tự xếp hàng; bấm **Hủy** dừng được giữa chừng; đóng trình duyệt hay
+- **Bắt đầu xử lý**: cả Video Dubbing và Text → Voice vào cùng hàng đợi. Graph hiển thị 7 bước video hoặc 4 bước text. Chạy song song tối đa 2 job,
+  job nộp thêm tự xếp hàng; bấm **Hủy** dừng được giữa chừng; đóng trình duyệt hay
   khởi động lại máy vẫn còn nguyên danh sách.
-- **Xong**: tải video lồng tiếng + phụ đề `.srt`. Nếu có đoạn bị thiếu (mạng chập chờn…)
+- **Xong**: video job cho tải video + `.srt`; text job cho tải WAV + MP3. Nếu có đoạn bị thiếu (mạng chập chờn…)
   màn kết quả sẽ báo đỏ kèm mốc thời gian — chạy lại video thường khắc phục được.
 - Đổi cấu hình: sửa `.env` → `Ctrl+C` tắt server → chạy lại.
+
+Muốn thêm ngôn ngữ mới, phải cập nhật registry `pipeline/languages.py`, capability của giọng
+và provider, preview text và tests; không chỉ thêm một option HTML.
 
 ## 9. Sự cố thường gặp
 
