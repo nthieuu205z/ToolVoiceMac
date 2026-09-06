@@ -82,6 +82,14 @@ def test_language_catalog_failure_does_not_block_other_boot_requests():
     assert 'await loadLanguages(); await Promise.all' not in JS
 
 
+def test_initial_voice_load_waits_to_sync_until_language_catalog_settles():
+    assert "async function loadVoices({ sync = true } = {})" in JS
+    assert "if (sync) syncComposerVoices();" in JS
+    assert "loadVoices({ sync: false })" in JS
+    init = JS.split("(async function init()", 1)[1]
+    assert init.index("loadVoices({ sync: false })") < init.index("syncComposerVoices()")
+
+
 def test_job_mode_drafts_have_separate_storage_keys():
     for key in (
         "sub.video.language",
