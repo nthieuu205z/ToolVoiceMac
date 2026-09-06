@@ -46,6 +46,28 @@ class FakeSynth:
         return self.outputs.pop(0) if self.outputs else pcm(0.1)
 
 
+def test_text_synthesis_registers_as_provider_production(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        text_to_voice,
+        "encode_mp3",
+        lambda _wav_path, mp3_path: Path(mp3_path).write_bytes(b"mp3"),
+    )
+
+    class CoordinatedSynth(FakeSynth):
+        engine = "edge"
+
+        def synthesize(self, text, voice_id, *, language="vi-VN"):
+            assert text_to_voice.speech_activity.active_production(self.engine) == 1
+            return super().synthesize(text, voice_id, language=language)
+
+    run_text_to_voice(
+        CoordinatedSynth(),
+        "Hello.",
+        tmp_path,
+        TextToVoiceOptions("voice", "en-US"),
+    )
+
+
 @pytest.mark.parametrize(
     ("text", "language", "max_chars", "expected"),
     [

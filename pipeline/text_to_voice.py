@@ -25,6 +25,7 @@ from .models import (
     noop_progress,
 )
 from .speech_synthesis import synthesize_texts
+from .speech_runtime import speech_activity
 
 
 @dataclass(frozen=True)
@@ -165,14 +166,16 @@ def run_text_to_voice(
     _remove_unpublished_outputs(wav_path, mp3_path)
 
     _raise_if_cancelled(should_cancel)
-    outputs, warnings = synthesize_texts(
-        synthesizer,
-        chunks,
-        options.voice_id,
-        language=language,
-        progress=progress,
-        should_cancel=should_cancel,
-    )
+    provider = str(getattr(synthesizer, "engine", "") or "unknown")
+    with speech_activity.production(provider):
+        outputs, warnings = synthesize_texts(
+            synthesizer,
+            chunks,
+            options.voice_id,
+            language=language,
+            progress=progress,
+            should_cancel=should_cancel,
+        )
     _raise_if_cancelled(should_cancel)
 
     successful = [pcm_to_array(value) for value in outputs if value is not None]

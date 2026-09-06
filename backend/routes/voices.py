@@ -109,10 +109,15 @@ _PREVIEW_TEXT = "Xin chào, đây là giọng đọc tiếng Việt dùng để 
 @router.get("/api/voices")
 def list_voices(language: str | None = None) -> list[dict]:
     """Kèm `preview_url` khi đã có file nghe thử; chưa có thì để rỗng, giao diện tự ẩn nút."""
-    selected_language = normalize_language_code(language or "vi-VN")
+    try:
+        selected_language = normalize_language_code(language or "vi-VN")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     result = []
     for voice in available_voices(
-        settings.tts_provider, settings.resolved_clone_provider, language=language,
+        settings.tts_provider,
+        settings.resolved_clone_provider,
+        language=selected_language,
     ):
         preview_urls = {
             code: _preview_url(voice.id, code)
@@ -144,7 +149,11 @@ def list_voices(language: str | None = None) -> list[dict]:
 def preview_voice(voice_id: str, language: str = "vi-VN") -> FileResponse:
     """Serve an explicitly known voice preview for the Voice Lab player."""
     try:
-        _voice, canonical = _require_voice(voice_id, language)
+        canonical = normalize_language_code(language)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    try:
+        _voice, canonical = _require_voice(voice_id, canonical)
     except HTTPException as exc:
         if exc.status_code == 400:
             raise HTTPException(404, "Không tìm thấy giọng đọc này.") from exc

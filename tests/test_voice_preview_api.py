@@ -45,6 +45,17 @@ def test_voice_list_exposes_language_preview_maps_and_compatibility_url(
     assert set(voice["preview_urls"]) == {"vi-VN", "en-US"}
 
 
+def test_voice_routes_reject_unknown_language_as_bad_request(client):
+    listed = client.get("/api/voices", params={"language": "xx-YY"})
+    preview = client.get(
+        "/api/voices/en-US-AvaMultilingualNeural/preview",
+        params={"language": "xx-YY"},
+    )
+
+    assert listed.status_code == 400
+    assert preview.status_code == 400
+
+
 def test_preview_endpoint_defaults_to_vietnamese_and_accepts_explicit_language(
     client, tmp_path, monkeypatch
 ):
