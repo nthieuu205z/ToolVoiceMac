@@ -123,3 +123,6 @@ def test_multilingual_composer_has_accessible_responsive_styles():
     assert "min-height: 160px" in CSS
     assert "prefers-reduced-motion" in CSS
     assert ".preview-actions .button.small { min-height: 44px; }" in CSS
+    assert ".voice-preview, .voice-select-button, .voice-delete, .upload-cancel { min-height: 44px; }" in CSS
+    assert ".voice-actions .voice-delete { flex: 0 0 44px; }" in CSS
+    assert ".upload-cancel { display: inline-flex; min-height: 44px;" in CSS

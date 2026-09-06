@@ -15,7 +15,7 @@ chip M-series nhờ int8, chỉ bước dịch cần mạng (Gemini).
   CPU, chậm hơn nhiều).
 - Khoảng 5 GB đĩa trống cho bộ cơ bản; cần thêm khoảng 3,3 GB nếu dùng OmniVoice.
 - Homebrew (nếu chưa có: <https://brew.sh>).
-- Khóa Gemini API (dùng lại khóa trong `.env` từ máy cũ).
+- Khóa Gemini API (bắt buộc cho Video Dubbing hoặc provider Gemini; không cần cho Text → Voice bằng Edge/OmniVoice).
 
 ## 1. Chép dự án từ máy cũ
 
@@ -99,8 +99,9 @@ Lời của clip mẫu (`ref_text`) do Whisper chép một lần rồi nhớ c�
 
 ## 5. Kiểm tra `.env`
 
-Nếu đã chép `.env` từ máy cũ thì giữ nguyên. Nếu làm mới: `cp .env.example .env`
-rồi điền `GEMINI_API_KEY`. Cấu hình khuyến nghị (đã là mặc định trong `.env` hiện tại):
+Nếu đã chép `.env` từ máy cũ thì giữ nguyên. Nếu làm mới: `cp .env.example .env`.
+Chỉ cần điền `GEMINI_API_KEY` khi dùng Video Dubbing hoặc provider Gemini; Text → Voice
+bằng Edge/OmniVoice có thể chạy khi để trống. Cấu hình khuyến nghị:
 
 ```
 GEMINI_BACKEND=vertex        # khóa tạo trong Google Cloud; khóa AI Studio thì để developer

@@ -5,9 +5,10 @@ Công cụ đa ngôn ngữ `vi-VN` / `en-US` với hai workflow dùng chung mộ
 - **Video Dubbing:** tải video, chọn ngôn ngữ đích và giọng; nhận video đã thay track âm thanh cùng phụ đề `.srt` theo ngôn ngữ đã chọn.
 - **Text → Voice:** nhập tối đa **50.000 ký tự**, chọn ngôn ngữ/giọng; nhận cả **WAV** và **MP3**.
 
-Media, job metadata và Text → Voice input được xử lý/lưu cục bộ. Video Dubbing luôn cần
-Gemini cho bước dịch; Text → Voice bằng Edge hoặc engine local không cần khóa Gemini.
-`edge-tts` vẫn cần Internet, còn giọng nhân bản OmniVoice chạy offline sau khi tải model.
+Media, job metadata và bản sao Text → Voice input được lưu cục bộ. Video Dubbing luôn cần
+Gemini cho bước dịch. Với Text → Voice, khi chọn Edge thì nội dung được gửi tới dịch vụ Microsoft;
+khi chọn Gemini thì nội dung được gửi tới Google; chỉ OmniVoice local giữ bước tổng hợp trên máy.
+Edge hoặc OmniVoice không cần khóa Gemini, nhưng `edge-tts` vẫn cần Internet.
 
 Mặc định xử lý cục bộ phần media; bước dịch gọi Gemini và `edge-tts` gọi dịch vụ giọng đọc
 qua mạng:
@@ -16,8 +17,8 @@ qua mạng:
 |---|---|---|
 | Khung thời gian | ffmpeg `silencedetect` — trên máy | tìm vùng có tiếng nói |
 | Nhận diện giọng nói | **Whisper trên máy** (GPU nếu có CUDA; macOS chạy CPU) | gộp lô CUDA ~9× nhanh hơn; lấy mốc TỪNG TỪ để cắt câu |
-| Dịch | **Gemini Flash** (các lô chạy song song) | bước duy nhất cần mạng |
-| Giọng đọc | **OmniVoice** trên máy (CUDA/MPS/CPU) / edge-tts qua mạng | không giới hạn lượt |
+| Dịch | **Gemini Flash** (các lô chạy song song) | bước cloud bắt buộc của Video Dubbing |
+| Giọng đọc | **OmniVoice** trên máy (CUDA/MPS/CPU) / edge-tts qua mạng | Edge là một thao tác mạng khác |
 
 Mặc định `STT_PROVIDER=whisper` + `TTS_PROVIDER=edge`: không tốn token, không hạn mức API,
 và trên máy có tăng tốc thì nhanh — video 19 phút xong **cả** pipeline trong ~2 phút. Chỉ dùng khóa
@@ -151,7 +152,7 @@ Tùy chọn — tạo file nghe thử giọng đọc để bấm nghe ngay trên
 Hoặc chạy thẳng bằng dòng lệnh, không qua giao diện:
 
 ```bash
-./.venv/bin/python scripts/run_pipeline_cli.py video.mp4 --voice Charon -v
+./.venv/bin/python scripts/run_pipeline_cli.py video.mp4 --voice Charon --target-language en-US -v
 ```
 
 ---

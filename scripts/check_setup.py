@@ -78,11 +78,14 @@ def check_tts() -> bool:
         if settings.tts_provider == "edge":
             print(f"{INFO}   Giọng clone sẽ dùng OmniVoice; giọng dựng sẵn vẫn dùng edge-tts")
     elif settings.clone_tts_provider == "omnivoice":
-        print(f"{BAD} OmniVoice chưa sẵn sàng. Chạy: uv pip install -e '.[omnivoice]'")
-        return False
+        print(f"{INFO} Giọng nhân bản OmniVoice chưa sẵn sàng; giọng dựng sẵn vẫn dùng được.")
+        print(f"{INFO}   Muốn bật clone: uv pip install -e '.[omnivoice]'")
 
 
     if provider == "gemini":
+        if not settings.gemini_api_key:
+            print(f"{BAD} Gemini TTS cần GEMINI_API_KEY.")
+            return False
         print(f"{INFO} Giọng đọc: Gemini ({settings.gemini_tts_model}) — trần ~100 lượt/ngày")
         print(f"{INFO}   {len(voices)} giọng khả dụng")
         return True
@@ -139,13 +142,24 @@ def _explain(code, vertex: bool) -> None:
         print("      hoặc dùng service account (GOOGLE_APPLICATION_CREDENTIALS).")
 
 
-if __name__ == "__main__":
+def main() -> int:
     print("── Kiểm tra môi trường ToolVietSub ──\n")
     print(capabilities_summary(), "\n")
-    results = [check_ffmpeg(), check_stt(), check_tts(), check_translate()]
+    ffmpeg_ready = check_ffmpeg()
+    stt_ready = check_stt()
+    tts_ready = check_tts()
+    translation_ready = check_translate()
+    text_ready = ffmpeg_ready and tts_ready
+    video_ready = ffmpeg_ready and stt_ready and tts_ready and translation_ready
     print()
-    if all(results):
-        print("Tất cả sẵn sàng. Chạy app:  ./.venv/bin/uvicorn backend.main:app --port 8000")
-    else:
-        print("Còn thiếu vài thứ ở trên — sửa xong rồi chạy lại script này.")
-        sys.exit(1)
+    print(f"Text → Voice: {'sẵn sàng' if text_ready else 'chưa sẵn sàng'}")
+    print(f"Video Dubbing: {'sẵn sàng' if video_ready else 'chưa sẵn sàng'}")
+    if text_ready or video_ready:
+        print("Chạy app:  ./.venv/bin/uvicorn backend.main:app --port 8000")
+        return 0
+    print("Chưa có workflow nào sẵn sàng — sửa các mục lỗi ở trên rồi chạy lại.")
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
