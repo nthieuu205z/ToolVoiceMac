@@ -188,6 +188,73 @@ def test_silent_rejection_of_language_code_triggers_a_retry_without_it(runner):
     assert runner._tts_language_code_rejected is True
 
 
+def test_silent_rejection_of_english_language_code_retries_without_it(runner):
+    models = _LanguageCodeTrap()
+    runner._client = _Client(models)
+
+    audio = runner.synthesize("hello", "Kore", language="en-US")
+
+    assert audio == b"\x01\x02"
+    assert models.sent == ["en-US", None]
+    assert runner._tts_language_code_rejected is True
+
+
+def test_explicit_english_is_resolved_for_each_speech_request(runner):
+    sent = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            sent.append(config.speech_config.language_code)
+            return _Response(parts=[_Part(b"\x08")])
+
+    runner._client = _Client(_Models())
+
+    assert runner.synthesize("hello", "Kore", language="en-US") == b"\x08"
+    assert sent == ["en-US"]
+
+
+def test_deprecated_constructor_language_remains_the_omitted_call_default():
+    sent = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            sent.append(config.speech_config.language_code)
+            return _Response(parts=[_Part(b"\x09")])
+
+    configured = GeminiRunner(
+        api_key="dummy",
+        stt_model="m",
+        translate_model="m",
+        tts_model="m",
+        tts_language_code="en-US",
+    )
+    configured._client = _Client(_Models())
+
+    assert configured.synthesize("hello", "Kore") == b"\x09"
+    assert sent == ["en-US"]
+
+
+def test_explicit_vietnamese_overrides_deprecated_constructor_language():
+    sent = []
+
+    class _Models:
+        def generate_content(self, *, model, contents, config):
+            sent.append(config.speech_config.language_code)
+            return _Response(parts=[_Part(b"\x0a")])
+
+    configured = GeminiRunner(
+        api_key="dummy",
+        stt_model="m",
+        translate_model="m",
+        tts_model="m",
+        tts_language_code="en-US",
+    )
+    configured._client = _Client(_Models())
+
+    assert configured.synthesize("xin chào", "Kore", language="vi-VN") == b"\x0a"
+    assert sent == ["vi-VN"]
+
+
 def test_the_rejection_is_remembered_for_later_segments(runner):
     models = _LanguageCodeTrap()
     runner._client = _Client(models)
@@ -250,7 +317,7 @@ class _TranslationResponse:
     def __init__(self):
         from pipeline.gemini import _TranslatedLine, _Translation
 
-        self.parsed = _Translation(lines=[_TranslatedLine(index=0, text_vi="xin chào")])
+        self.parsed = _Translation(lines=[_TranslatedLine(index=0, text="xin chào")])
         self.candidates = []
         self.text = ""
 

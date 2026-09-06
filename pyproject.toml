@@ -1,7 +1,7 @@
 [project]
 name = "toolvietsub"
 version = "0.1.0"
-description = "Lồng tiếng & phụ đề tiếng Việt cho video, chạy cục bộ trên máy"
+description = "Video dubbing và Text-to-Voice đa ngôn ngữ, local-first trên macOS"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115",
@@ -37,6 +37,9 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = [
+    "provider_smoke: opt-in calls to real network/local model providers",
+]
 
 [tool.setuptools]
 packages = ["backend", "pipeline"]

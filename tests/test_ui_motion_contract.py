@@ -43,8 +43,9 @@ def test_execution_graph_has_directional_flow_classes_and_motion():
     css = (ROOT / "style.css").read_text(encoding="utf-8")
     js = (ROOT / "app.js").read_text(encoding="utf-8")
 
-    assert 'data-flow-index="0"' in html
-    assert "graph-flow" in html
+    assert 'id="pipelineGraph"' in html
+    assert "renderGraphNodes(job)" in js
+    assert "graph-flow" in js
     assert "flow-active" in css
     assert "flow-complete" in css
     assert "flow-active" in js
@@ -57,10 +58,11 @@ def test_execution_graph_has_directional_flow_classes_and_motion():
 def test_execution_graph_uses_a_track_and_layered_flow_effect():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
     css = (ROOT / "style.css").read_text(encoding="utf-8")
+    js = (ROOT / "app.js").read_text(encoding="utf-8")
 
     assert 'class="graph-track"' in html
-    assert 'class="graph-step"' in html
-    assert 'class="graph-rail"' in html
+    assert "graph-step" in js
+    assert "graph-rail" in js
     assert ".graph-track {" in css
     assert ".graph-step {" in css
     assert ".graph-link::before" in css

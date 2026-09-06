@@ -20,7 +20,7 @@ def test_upload_control_ids_are_wired_to_the_new_job_flow():
     html = Path("web/static/index.html").read_text(encoding="utf-8")
     source = Path("web/static/app.js").read_text(encoding="utf-8")
 
-    for element_id in ("uploadPanel", "uploadForm", "videoInput", "voiceSelect", "startButton", "uploadProgress"):
+    for element_id in ("uploadPanel", "uploadForm", "videoInput", "videoVoiceSelect", "startButton", "uploadProgress"):
         assert f'id="{element_id}"' in html
     assert 'xhr.open("POST", "/api/jobs")' in source
     assert 'form.append("video", state.selectedFile)' in source

@@ -45,8 +45,8 @@ def test_upload_sends_the_selected_file_with_its_filename():
 def test_ui_assets_are_cache_busted_after_bugfix():
     html = (ROOT / "index.html").read_text(encoding="utf-8")
 
-    assert 'style.css?v=20260905-36' in html
-    assert 'app.js?v=20260905-36' in html
+    assert 'style.css?v=20260906-43' in html
+    assert 'app.js?v=20260906-43' in html
 
 
 def test_ui_uses_a_vietnamese_safe_font_stack():

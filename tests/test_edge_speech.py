@@ -59,6 +59,22 @@ def test_a_clean_call_returns_decoded_pcm():
     assert _FakeCommunicate.calls == [("chào", "vi-VN-HoaiMyNeural")]
 
 
+def test_an_english_call_uses_a_compatible_catalog_voice():
+    voice_id = "en-US-AvaMultilingualNeural"
+
+    assert EdgeSynthesizer().synthesize("hello", voice_id, language="en-US") == b"pcm:mp3-bytes"
+    assert _FakeCommunicate.calls == [("hello", voice_id)]
+
+
+def test_an_incompatible_catalog_voice_is_rejected_before_the_request():
+    with pytest.raises(SpeechServiceError, match="không hỗ trợ"):
+        EdgeSynthesizer().synthesize(
+            "hello", "vi-VN-HoaiMyNeural", language="en-US"
+        )
+
+    assert _FakeCommunicate.calls == []
+
+
 def test_only_audio_chunks_are_kept():
     """Stream còn trả WordBoundary — gộp nhầm vào là hỏng file mp3."""
     assert b"ignored" not in EdgeSynthesizer().synthesize("chào", "v")

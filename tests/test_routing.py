@@ -68,9 +68,38 @@ def test_is_available_accepts_clone_when_engine_present():
     assert not is_available("khong-ton-tai", tts_provider="edge", clone_provider="omnivoice")
 
 
+def test_available_voices_filters_by_canonical_language():
+    vietnamese = available_voices("edge", "omnivoice", language="vi-VN")
+    english = available_voices("edge", "omnivoice", language="en-US")
+
+    assert all(voice.supports("vi-VN") for voice in vietnamese)
+    assert all(voice.supports("en-US") for voice in english)
+    assert "vi-VN-HoaiMyNeural" not in {voice.id for voice in english}
+    assert "en-US-AvaMultilingualNeural" in {voice.id for voice in english}
+
+
+def test_custom_voice_supports_vietnamese_and_english():
+    voice_id = _make_clone("clone-multi", "Multi")
+    voice = next(v for v in available_voices("edge", "omnivoice") if v.id == voice_id)
+    assert voice.supported_languages == ("vi-VN", "en-US")
+
+
+def test_is_available_rejects_a_voice_that_cannot_speak_the_language():
+    assert not is_available(
+        "vi-VN-HoaiMyNeural", "edge", None, language="en-US",
+    )
+    assert is_available(
+        "en-US-AvaMultilingualNeural", "edge", None, language="en-US",
+    )
+
+
 # ── default_voice ────────────────────────────────────────────────────────────
 def test_default_voice_returns_a_preset_for_normal_providers():
     assert default_voice("edge").startswith("vi-VN")   # có giọng dựng sẵn
+
+
+def test_default_voice_returns_the_first_voice_for_the_requested_language():
+    assert default_voice("edge", language="en-US") == "en-US-AvaMultilingualNeural"
 
 
 def test_default_voice_on_omnivoice_without_clones_raises_clear_error():

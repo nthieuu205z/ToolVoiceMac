@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
 from backend.config import settings
+from backend.job_contracts import JobArtifact
 from backend.job_manager import Job, manager
 from backend.main import app
 from pipeline.voices import voices_for
@@ -30,7 +33,38 @@ def test_voices_endpoint_shape_matches_frontend_expectations(client):
     # Tính trong thân test: danh sách giọng phụ thuộc kho giọng nhân bản mà fixture
     # autouse đã cách ly — VOICES ở cấp module được tính TRƯỚC khi fixture chạy.
     assert len(body) == len(voices_for(settings.tts_provider))
-    assert set(body[0]) == {"id", "display_name", "preview_url", "custom"}
+    assert {"id", "display_name", "preview_url", "custom"} <= set(body[0])
+    assert body[0]["provider"] == settings.tts_provider
+    assert body[0]["supported_languages"] == ["vi-VN"]
+
+
+def test_languages_endpoint_lists_supported_workflows(client):
+    assert client.get("/api/languages").json() == [
+        {
+            "code": "vi-VN",
+            "display_name": "Tiếng Việt",
+            "english_name": "Vietnamese",
+            "video_dubbing": True,
+            "text_to_voice": True,
+        },
+        {
+            "code": "en-US",
+            "display_name": "English (US)",
+            "english_name": "English",
+            "video_dubbing": True,
+            "text_to_voice": True,
+        },
+    ]
+
+
+def test_voices_endpoint_filters_by_language(client, monkeypatch):
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+
+    body = client.get("/api/voices", params={"language": "en"}).json()
+
+    assert "vi-VN-HoaiMyNeural" not in {voice["id"] for voice in body}
+    assert "en-US-AvaMultilingualNeural" in {voice["id"] for voice in body}
+    assert all("en-US" in voice["supported_languages"] for voice in body)
 
 
 def test_voice_preview_endpoint_serves_a_known_preview(client, tmp_path, monkeypatch):
@@ -145,7 +179,6 @@ def test_rejects_upload_when_api_key_missing(client, monkeypatch):
 
 def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_path):
     """Nhiều video cùng lúc: video thứ hai vào danh sách chứ không bị 409 như trước."""
-    import backend.job_manager as jm
     from pipeline.models import MediaInfo, PipelineResult
 
     monkeypatch.setattr(settings, "gemini_api_key", "test-key")
@@ -153,7 +186,7 @@ def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_p
     monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
     monkeypatch.setattr("backend.routes.jobs.probe_video",
                         lambda p: MediaInfo(duration=1.0, video_codec="h264", has_audio=True))
-    monkeypatch.setattr(jm, "run_pipeline",
+    monkeypatch.setattr("backend.routes.jobs.run_pipeline",
                         lambda *a, **k: PipelineResult(video_path="v.mp4", srt_path="v.srt"))
     _put(Job(id="busy", filename="a.mp4", workdir=tmp_path, voice_id="Kore", status="running"))
 
@@ -167,6 +200,77 @@ def test_a_second_upload_is_accepted_while_a_job_runs(client, monkeypatch, tmp_p
 
     ids = [j["job_id"] for j in client.get("/api/jobs").json()["jobs"]]
     assert "busy" in ids and len(ids) == 2
+
+
+def test_create_job_normalizes_and_forwards_target_language(client, monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from pipeline.models import MediaInfo, PipelineResult
+
+    captured = {}
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+    monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
+    monkeypatch.setattr(
+        "backend.routes.jobs.probe_video",
+        lambda path: MediaInfo(duration=1.0, video_codec="h264", has_audio=True),
+    )
+    monkeypatch.setattr(
+        manager,
+        "start",
+        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(id="english-job"),
+    )
+    pipeline_call = {}
+    monkeypatch.setattr(
+        "backend.routes.jobs.run_pipeline",
+        lambda backend, video, workdir, options, progress, media, should_cancel: (
+            pipeline_call.update(options=options, media=media)
+            or PipelineResult(
+                video_path=str(workdir / "output_en.mp4"),
+                srt_path=str(workdir / "output_en.srt"),
+            )
+        ),
+    )
+
+    response = client.post(
+        "/api/jobs",
+        files={"video": ("a.mp4", b"data", "video/mp4")},
+        data={"voice_id": "en-US-AvaMultilingualNeural", "target_language": "en"},
+    )
+
+    assert response.status_code == 200
+    assert captured["job_type"] == "video_dubbing"
+    assert captured["target_language"] == "en-US"
+    assert captured["input_label"] == "a.mp4"
+
+    result = captured["runner"](None, lambda *args: None, lambda: False)
+    assert pipeline_call["options"].target_language == "en-US"
+    assert [artifact.filename for artifact in result.artifacts] == ["a_en.mp4", "a_en.srt"]
+
+
+def test_create_job_rejects_a_voice_that_cannot_speak_the_target_language(
+    client, monkeypatch, tmp_path
+):
+    from pipeline.models import MediaInfo
+
+    starts = []
+    monkeypatch.setattr(settings, "gemini_api_key", "test-key")
+    monkeypatch.setattr(settings, "tts_provider", "edge")
+    monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
+    monkeypatch.setattr(
+        "backend.routes.jobs.probe_video",
+        lambda path: MediaInfo(duration=1.0, video_codec="h264", has_audio=True),
+    )
+    monkeypatch.setattr(manager, "start", lambda **kwargs: starts.append(kwargs))
+
+    response = client.post(
+        "/api/jobs",
+        files={"video": ("a.mp4", b"data", "video/mp4")},
+        data={"voice_id": "vi-VN-HoaiMyNeural", "target_language": "en-US"},
+    )
+
+    assert response.status_code == 400
+    assert starts == []
 
 
 def test_the_job_list_is_newest_first(client, tmp_path):
@@ -184,23 +288,128 @@ def test_download_is_refused_until_the_job_finishes(client, tmp_path):
     assert client.get("/api/jobs/abc/download/video").status_code == 409
 
 
+def test_generic_artifact_download_serves_declared_audio(client, tmp_path):
+    audio = tmp_path / "output.wav"
+    audio.write_bytes(b"RIFFfake")
+    _put(Job(
+        id="speech",
+        filename="Hello",
+        input_label="Hello",
+        workdir=tmp_path,
+        voice_id="Ava",
+        job_type="text_to_voice",
+        target_language="en-US",
+        status="done",
+        artifacts=[
+            JobArtifact("wav", "wav", "hello.wav", "audio/wav", str(audio))
+        ],
+    ))
+
+    response = client.get("/api/jobs/speech/artifacts/wav")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "audio/wav"
+    assert "hello.wav" in response.headers["content-disposition"]
+    assert client.get("/api/jobs/speech/artifacts/mp3").status_code == 404
+
+
 def test_download_serves_the_result_with_a_vietnamese_suffix(client, tmp_path):
     video = tmp_path / "output.mp4"
     video.write_bytes(b"fake")
     _put(Job(
         id="abc", filename="phim.mkv", workdir=tmp_path, voice_id="Kore",
-        status="done", video_path=str(video), srt_path=str(video),
+        status="done",
+        artifacts=[
+            JobArtifact("video", "video", "phim_vi.mp4", "video/mp4", str(video)),
+            JobArtifact(
+                "subtitle", "subtitle", "phim_vi.srt", "application/x-subrip", str(video)
+            ),
+        ],
     ))
     response = client.get("/api/jobs/abc/download/video")
     assert response.status_code == 200
     assert "phim_vi.mp4" in response.headers["content-disposition"]
 
 
+def test_download_serves_english_results_with_an_english_suffix(client, tmp_path):
+    video = tmp_path / "output_en.mp4"
+    subtitles = tmp_path / "output_en.srt"
+    video.write_bytes(b"fake")
+    subtitles.write_text("", encoding="utf-8")
+    _put(Job(
+        id="english", filename="movie.mkv", workdir=tmp_path, voice_id="Ava",
+        target_language="en-US", status="done",
+        artifacts=[
+            JobArtifact("video", "video", "movie_en.mp4", "video/mp4", str(video)),
+            JobArtifact(
+                "subtitle", "subtitle", "movie_en.srt", "application/x-subrip",
+                str(subtitles),
+            ),
+        ],
+    ))
+
+    video_response = client.get("/api/jobs/english/download/video")
+    srt_response = client.get("/api/jobs/english/download/srt")
+
+    assert "movie_en.mp4" in video_response.headers["content-disposition"]
+    assert "movie_en.srt" in srt_response.headers["content-disposition"]
+
+
+@pytest.mark.parametrize(
+    ("metadata", "video_name", "srt_name", "expected_language", "suffix"),
+    [
+        ({}, "output.mp4", "output.srt", "vi-VN", "vi"),
+        ({}, "output_en.mp4", "output_en.srt", "en-US", "en"),
+        ({"target_language": "en-US"}, "output.mp4", "output.srt", "en-US", "en"),
+    ],
+)
+def test_legacy_download_aliases_restore_original_filename_and_language_suffix(
+    client,
+    tmp_path,
+    metadata,
+    video_name,
+    srt_name,
+    expected_language,
+    suffix,
+):
+    workdir = tmp_path / f"legacy-{suffix}-{video_name}"
+    workdir.mkdir()
+    (workdir / video_name).write_bytes(b"video")
+    (workdir / srt_name).write_text("", encoding="utf-8")
+    (workdir / "job.json").write_text(
+        json.dumps(
+            {
+                "job_id": workdir.name,
+                "filename": "phim.mkv",
+                "status": "done",
+                "video_path": video_name,
+                "srt_path": srt_name,
+                **metadata,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert manager.restore(tmp_path) == 1
+    restored = manager.get(workdir.name)
+    assert restored is not None
+    assert restored.target_language == expected_language
+
+    video_response = client.get(f"/api/jobs/{workdir.name}/download/video")
+    srt_response = client.get(f"/api/jobs/{workdir.name}/download/srt")
+
+    assert video_response.status_code == 200
+    assert srt_response.status_code == 200
+    assert f"phim_{suffix}.mp4" in video_response.headers["content-disposition"]
+    assert f"phim_{suffix}.srt" in srt_response.headers["content-disposition"]
+
+
 # ─── số liệu chất lượng mà giao diện dựa vào để cảnh báo ───
 
 def _done_job(tmp_path, *, attempted, spoken, warnings=()):
     job = Job(id="q", filename="a.mp4", workdir=tmp_path, voice_id="Kore", status="done",
-              attempted_count=attempted, spoken_count=spoken, warnings=list(warnings))
+              attempted_count=attempted, spoken_count=spoken, warnings=list(warnings),
+              degraded=attempted > 0 and spoken < attempted)
     manager._jobs[job.id] = job
     return job
 
@@ -219,9 +428,9 @@ def test_mostly_silent_result_is_flagged_degraded(client, tmp_path):
     assert client.get("/api/jobs/q").json()["degraded"] is True
 
 
-def test_a_few_missing_lines_is_not_degraded(client, tmp_path):
+def test_any_partial_result_is_flagged_degraded(client, tmp_path):
     _done_job(tmp_path, attempted=100, spoken=95)
-    assert client.get("/api/jobs/q").json()["degraded"] is False
+    assert client.get("/api/jobs/q").json()["degraded"] is True
 
 
 def test_a_clean_run_is_never_degraded(client, tmp_path):
@@ -237,8 +446,10 @@ def test_silent_ratio_is_zero_when_nothing_was_attempted(client, tmp_path):
 
 
 def test_a_running_job_is_never_degraded(client, tmp_path):
-    job = _done_job(tmp_path, attempted=100, spoken=0)
-    job.status = "running"
+    job = Job(
+        id="q", filename="a.mp4", workdir=tmp_path, voice_id="Kore",
+        status="running", attempted_count=100, spoken_count=0,
+    )
     manager._jobs[job.id] = job
     assert client.get("/api/jobs/q").json()["degraded"] is False
 

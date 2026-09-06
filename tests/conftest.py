@@ -7,7 +7,11 @@ import struct
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from backend.config import settings
+from backend.job_manager import manager
+from backend.main import app
 from pipeline.models import TTS_SAMPLE_RATE
 
 
@@ -75,14 +79,23 @@ class FakeGemini:
             return self.language, ""
         return self.language, self.clips[min(index, len(self.clips) - 1)]
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
         self.translate_calls.append((texts, durations, context))
         if self.translations:
             index = min(len(self.translate_calls) - 1, len(self.translations) - 1)
             return self.translations[index]
         return [f"[vi] {t}" for t in texts]
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
         prior = self.synthesize_calls.count((text, voice_id))
         self.synthesize_calls.append((text, voice_id))
         if self.tts_error is not None:
@@ -105,3 +118,20 @@ def _isolated_custom_voices(tmp_path_factory, monkeypatch):
     from pipeline import custom_voices
 
     monkeypatch.setattr(custom_voices, "_dir", tmp_path_factory.mktemp("voices"))
+
+
+@pytest.fixture
+def jobs_dir(tmp_path, monkeypatch):
+    """Keep API job fixtures out of the repository's persistent jobs directory."""
+    monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def client(jobs_dir):
+    """Shared API client with an isolated, empty job registry."""
+    manager._jobs.clear()
+    manager._futures.clear()
+    yield TestClient(app)
+    manager._jobs.clear()
+    manager._futures.clear()

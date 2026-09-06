@@ -34,7 +34,7 @@ class NoSpeechDetectedError(PipelineError):
 class JobCancelledError(PipelineError):
     """Người dùng bấm hủy. Không phải lỗi — pipeline dừng ở mốc an toàn gần nhất."""
 
-    user_message = "Đã hủy xử lý video."
+    user_message = "Đã hủy công việc."
 
 
 class GeminiAPIError(PipelineError):
@@ -48,6 +48,18 @@ class SpeechServiceError(PipelineError):
         "Dịch vụ giọng đọc miễn phí đang từ chối. Thử lại sau ít phút, "
         "hoặc đổi TTS_PROVIDER=gemini trong .env."
     )
+
+
+class InvalidTextError(PipelineError):
+    """Văn bản đầu vào không có nội dung có thể đọc."""
+
+    user_message = "Vui lòng nhập nội dung cần chuyển thành giọng nói."
+
+
+class TextTooLongError(PipelineError):
+    """Văn bản đầu vào vượt giới hạn an toàn của một job."""
+
+    user_message = "Nội dung không được vượt quá 50.000 ký tự."
 
 
 class QuotaExhaustedError(PipelineError):

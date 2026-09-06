@@ -22,8 +22,9 @@ from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from backend.job_contracts import JobArtifact, JobRunResult, JobRunner
 from pipeline.errors import JobCancelledError, PipelineError
-from pipeline.models import MediaInfo, overall_percent
+from pipeline.models import STAGES_BY_JOB_TYPE, MediaInfo, overall_percent
 from pipeline.runner import PipelineOptions, run_pipeline
 
 log = logging.getLogger(__name__)
@@ -34,7 +35,7 @@ SILENT_RATIO_ALERT = 0.2
 # Trạng thái còn "sống": chiếm slot chạy và không được dọn thư mục.
 ACTIVE_STATUSES = ("queued", "running", "cancelling")
 
-_INTERRUPTED_MESSAGE = "Máy chủ đã dừng khi video này đang xử lý. Hãy chạy lại video."
+_INTERRUPTED_MESSAGE = "Máy chủ đã dừng khi công việc này đang xử lý. Hãy chạy lại công việc."
 
 
 def _optional_float(value) -> float | None:
@@ -50,18 +51,120 @@ def _safe_int(value) -> int:
         return 0
 
 
+def _direct_child_path(
+    workdir: Path, value: object, *, require_relative: bool
+) -> Path | None:
+    """Resolve one artifact path without allowing traversal, nesting, or symlinks."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        raw = Path(value)
+        if not value or ".." in raw.parts or (require_relative and raw.is_absolute()):
+            return None
+        if require_relative and len(raw.parts) != 1:
+            return None
+        root = workdir.resolve(strict=True)
+        candidate = raw if raw.is_absolute() else workdir / raw
+        if candidate.is_symlink():
+            return None
+        resolved = candidate.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return resolved if resolved.parent == root else None
+
+
+def _validated_artifacts(workdir: Path, artifacts: list[JobArtifact]) -> list[JobArtifact]:
+    """Materialize a result's artifacts only after every persisted field is safe."""
+    validated: list[JobArtifact] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, JobArtifact):
+            raise TypeError("Job result artifacts must be JobArtifact values")
+        values = {
+            name: getattr(artifact, name)
+            for name in ("id", "kind", "filename", "media_type", "path")
+        }
+        if not all(isinstance(value, str) and value.strip() for value in values.values()):
+            raise TypeError("Job artifact fields must be non-empty strings")
+        path = _direct_child_path(workdir, values["path"], require_relative=False)
+        if path is None:
+            raise ValueError("Job artifact path must be a safe direct child")
+        validated.append(JobArtifact(**{**values, "path": str(path)}))
+    return validated
+
+
+def _restore_artifacts(data: dict, workdir: Path) -> list[JobArtifact]:
+    """Restore only new-format relative direct-child artifact records."""
+    restored: list[JobArtifact] = []
+    raw_artifacts = data.get("artifacts", [])
+    if not isinstance(raw_artifacts, list):
+        return restored
+    for item in raw_artifacts:
+        if not isinstance(item, dict):
+            continue
+        values = [item.get(key) for key in ("id", "kind", "filename", "media_type", "path")]
+        if not all(isinstance(value, str) and value for value in values):
+            continue
+        path = _direct_child_path(workdir, values[4], require_relative=True)
+        if path is None:
+            continue
+        restored.append(JobArtifact(values[0], values[1], values[2], values[3], str(path)))
+    return restored
+
+
+def _legacy_target_language(data: dict) -> str:
+    explicit = data.get("target_language")
+    if isinstance(explicit, str) and explicit:
+        return explicit
+    for key in ("video_path", "srt_path"):
+        value = data.get(key)
+        if isinstance(value, str) and Path(value).stem.endswith("_en"):
+            return "en-US"
+    return "vi-VN"
+
+
+def _legacy_artifacts(
+    data: dict, workdir: Path, target_language: str
+) -> list[JobArtifact]:
+    artifacts: list[JobArtifact] = []
+    original_name = str(data.get("filename") or data.get("input_label") or "video")
+    stem = Path(original_name).stem or "video"
+    suffix = "en" if target_language == "en-US" else "vi"
+    for artifact_id, kind, media_type, key in (
+        ("video", "video", "video/mp4", "video_path"),
+        ("subtitle", "subtitle", "application/x-subrip", "srt_path"),
+    ):
+        value = str(data.get(key, "") or "")
+        if not value:
+            continue
+        path = _direct_child_path(workdir, value, require_relative=False)
+        if path is None:
+            continue
+        filename = (
+            f"{stem}_{suffix}{path.suffix or '.mp4'}"
+            if artifact_id == "video"
+            else f"{stem}_{suffix}.srt"
+        )
+        artifacts.append(
+            JobArtifact(artifact_id, kind, filename, media_type, str(path))
+        )
+    return artifacts
+
+
 @dataclass
 class Job:
     id: str
     filename: str
     workdir: Path
     voice_id: str
+    job_type: str = "video_dubbing"
+    target_language: str = "vi-VN"
+    input_label: str = ""
     status: str = "queued"  # queued | running | cancelling | cancelled | done | error
     stage: str = "extract"
     percent: float = 0.0
     message: str = ""
-    video_path: str = ""
-    srt_path: str = ""
+    artifacts: list[JobArtifact] = field(default_factory=list)
+    degraded: bool = False
     attempted_count: int = 0
     spoken_count: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -90,9 +193,17 @@ class Job:
             return 0.0
         return (self.attempted_count - self.spoken_count) / self.attempted_count
 
+    def _artifact_path(self, artifact_id: str) -> str:
+        artifact = next((item for item in self.artifacts if item.id == artifact_id), None)
+        return artifact.path if artifact is not None else ""
+
     @property
-    def degraded(self) -> bool:
-        return self.status == "done" and self.silent_ratio >= SILENT_RATIO_ALERT
+    def video_path(self) -> str:
+        return self._artifact_path("video")
+
+    @property
+    def srt_path(self) -> str:
+        return self._artifact_path("subtitle")
 
     def _append_event_locked(self, event: dict) -> None:
         self.events.append(event)
@@ -214,7 +325,10 @@ class Job:
             previous_percent = self.percent
             self.stage = stage
             self.stage_fraction = bounded
-            self.percent = max(previous_percent, overall_percent(stage, bounded))
+            self.percent = max(
+                previous_percent,
+                overall_percent(stage, bounded, self.job_type, fallback=self.percent),
+            )
             self.message = message
             self._append_event_locked({
                 "at": at,
@@ -271,8 +385,12 @@ class Job:
                 "percent": self.percent,
                 "message": self.message,
                 "filename": self.filename,
+                "input_label": self.input_label,
+                "job_type": self.job_type,
+                "target_language": self.target_language,
                 "voice_id": self.voice_id,
                 "created_at": round(self.created_at, 3),
+                "artifacts": [artifact.public() for artifact in self.artifacts],
                 "warnings": self.warnings,
                 "attempted_count": self.attempted_count,
                 "spoken_count": self.spoken_count,
@@ -291,16 +409,30 @@ class Job:
                 "events": [dict(item) for item in self.events],
             }
 
-    def mark_persisted_result(self, video_path: str, srt_path: str,
-                              warnings: list[str], attempted_count: int,
-                              spoken_count: int) -> None:
+    def publish_result(self, result: JobRunResult) -> None:
         """Set terminal result fields before the terminal status is exposed."""
+        artifacts = _validated_artifacts(self.workdir, list(result.artifacts))
+        warnings = list(result.warnings)
+        if not all(isinstance(warning, str) for warning in warnings):
+            raise TypeError("Job result warnings must be strings")
+        attempted_count = max(0, int(result.attempted_count))
+        spoken_count = max(0, int(result.spoken_count))
+        degraded = attempted_count > 0 and spoken_count < attempted_count
         with self.telemetry_lock:
-            self.video_path = video_path
-            self.srt_path = srt_path
-            self.warnings = list(warnings)
-            self.attempted_count = max(0, int(attempted_count))
-            self.spoken_count = max(0, int(spoken_count))
+            self.artifacts = artifacts
+            self.warnings = warnings
+            self.attempted_count = attempted_count
+            self.spoken_count = spoken_count
+            self.degraded = degraded
+
+    def clear_result(self) -> None:
+        """Discard unpublished/partial terminal data after finalization fails."""
+        with self.telemetry_lock:
+            self.artifacts = []
+            self.warnings = []
+            self.attempted_count = 0
+            self.spoken_count = 0
+            self.degraded = False
 
 
 class JobManager:
@@ -335,17 +467,72 @@ class JobManager:
 
     # ─── vòng đời ───────────────────────────────────────────────────
 
-    def start(self, *, filename: str, workdir: Path, voice_id: str, video_path: Path,
-              media: MediaInfo, backend_factory, options: PipelineOptions) -> Job:
+    def start(
+        self,
+        *,
+        job_id: str | None = None,
+        filename: str,
+        workdir: Path,
+        voice_id: str,
+        backend_factory,
+        input_label: str = "",
+        job_type: str = "video_dubbing",
+        target_language: str = "vi-VN",
+        runner: JobRunner | None = None,
+        video_path: Path | None = None,
+        media: MediaInfo | None = None,
+        options: PipelineOptions | None = None,
+    ) -> Job:
         """Nhận job mới. Quá trần chạy đồng thời thì job nằm hàng đợi, không từ chối."""
-        job = Job(id=uuid.uuid4().hex[:12], filename=filename, workdir=workdir, voice_id=voice_id)
+        if job_type not in STAGES_BY_JOB_TYPE:
+            raise ValueError(f"Loại công việc không được hỗ trợ: {job_type}")
+        if runner is None:
+            if video_path is None or media is None or options is None:
+                raise TypeError("runner is required")
+            target_language = options.target_language
+
+            def legacy_video_runner(backend, progress, should_cancel) -> JobRunResult:
+                result = run_pipeline(
+                    backend, video_path, workdir, options, progress, media, should_cancel
+                )
+                return JobRunResult(
+                    artifacts=[
+                        JobArtifact(
+                            "video", "video", Path(result.video_path).name,
+                            "video/mp4", result.video_path,
+                        ),
+                        JobArtifact(
+                            "subtitle", "subtitle", Path(result.srt_path).name,
+                            "application/x-subrip", result.srt_path,
+                        ),
+                    ],
+                    warnings=result.warnings,
+                    attempted_count=result.attempted_count,
+                    spoken_count=result.spoken_count,
+                )
+
+            runner = legacy_video_runner
+
+        job = Job(
+            id=job_id or uuid.uuid4().hex[:12],
+            filename=filename,
+            input_label=input_label or filename,
+            job_type=job_type,
+            target_language=target_language,
+            workdir=workdir,
+            voice_id=voice_id,
+            stage=STAGES_BY_JOB_TYPE[job_type][0],
+        )
         with self._lock:
             self._jobs[job.id] = job
-        self._persist(job)
-
-        future = self._ensure_executor().submit(
-            self._run, job, video_path, media, backend_factory, options
-        )
+        try:
+            self._persist(job)
+            future = self._ensure_executor().submit(self._run, job, backend_factory, runner)
+        except Exception:
+            with self._lock:
+                self._jobs.pop(job.id, None)
+                self._futures.pop(job.id, None)
+            raise
         self._futures[job.id] = future
         return job
 
@@ -395,19 +582,58 @@ class JobManager:
             )
         return self._executor
 
-    def _run(self, job: Job, video_path: Path, media: MediaInfo, backend_factory,
-             options: PipelineOptions) -> None:
+    @staticmethod
+    def _finish_failed_job(
+        job: Job, status: str, message: str, *, clear_result: bool
+    ) -> None:
+        """Always publish a terminal failure, even if telemetry finalization breaks."""
+        with job.telemetry_lock:
+            if clear_result:
+                job.clear_result()
+            job.message = message
+            try:
+                job.mark_finished(status, message)
+            except Exception:
+                job.finished_at = time.time()
+            job.status = status
+
+    def _run(self, job: Job, backend_factory, runner, *legacy_args) -> None:
+        # Internal compatibility for old direct callers; production dispatch is typed.
+        if legacy_args:
+            video_path = backend_factory
+            media = runner
+            backend_factory, options = legacy_args
+
+            def legacy_runner(backend, progress, should_cancel) -> JobRunResult:
+                result = run_pipeline(
+                    backend, video_path, job.workdir, options, progress, media, should_cancel
+                )
+                return JobRunResult(
+                    artifacts=[
+                        JobArtifact("video", "video", Path(result.video_path).name,
+                                    "video/mp4", result.video_path),
+                        JobArtifact("subtitle", "subtitle", Path(result.srt_path).name,
+                                    "application/x-subrip", result.srt_path),
+                    ],
+                    warnings=result.warnings,
+                    attempted_count=result.attempted_count,
+                    spoken_count=result.spoken_count,
+                )
+
+            runner = legacy_runner
+
         if job.cancel_requested:   # bấm hủy khi còn trong hàng đợi
-            job.message = JobCancelledError.user_message
-            job.status = "cancelled"
-            job.mark_finished("cancelled", job.message)
+            with job.telemetry_lock:
+                job.message = JobCancelledError.user_message
+                job.mark_finished("cancelled", job.message)
+                job.status = "cancelled"
             self._persist(job)
             return
 
-        job.status = "running"
-        job.message = "Đang khởi tạo pipeline"
-        job.mark_started()
         with job.telemetry_lock:
+            job.status = "running"
+            job.message = "Đang khởi tạo pipeline"
+            job.mark_started()
             job._append_event_locked({
                 "at": time.time(),
                 "kind": "status",
@@ -423,50 +649,61 @@ class JobManager:
                 return
             job.update_progress(stage, fraction, message)
 
+        publishing = False
         try:
             log.info("Job %s: bắt đầu pipeline, voice=%s", job.id, job.voice_id)
             backend = backend_factory()
             job.update_runtime_from_backend(backend)
             self._persist(job)
-            result = run_pipeline(backend, video_path, job.workdir, options,
-                                  progress, media, job.cancel_event.is_set)
+            result = runner(backend, progress, job.cancel_event.is_set)
+            if not isinstance(result, JobRunResult):
+                raise TypeError("Job runner must return JobRunResult")
+            if job.cancel_requested:
+                raise JobCancelledError()
+            publishing = True
+            with job.telemetry_lock:
+                job.publish_result(result)
+                final_stage = STAGES_BY_JOB_TYPE[job.job_type][-1]
+                job.update_progress(final_stage, 1.0, "Hoàn tất")
+                job.mark_finished("done", job.message)
+                job.status = "done"
         except JobCancelledError as exc:
             log.info("Job %s đã dừng theo yêu cầu ở bước %s", job.id, job.stage)
-            job.message = exc.user_message
-            job.mark_finished("cancelled", job.message)
-            job.status = "cancelled"
+            self._finish_failed_job(
+                job, "cancelled", exc.user_message, clear_result=publishing
+            )
         except PipelineError as exc:
             log.warning("Job %s lỗi ở bước %s: %s", job.id, job.stage, exc)
-            job.message = exc.user_message
-            job.mark_finished("error", job.message)
-            job.status = "error"
+            self._finish_failed_job(
+                job, "error", exc.user_message, clear_result=publishing
+            )
         except Exception as exc:  # lỗi ngoài dự kiến — vẫn phải hiện được lên UI
             log.exception("Job %s hỏng bất ngờ", job.id)
-            job.message = f"Lỗi không lường trước: {exc}"
-            job.mark_finished("error", job.message)
-            job.status = "error"
-        else:
-            # Gán kết quả TRƯỚC khi lật status: giao diện thấy "done" là dừng đọc ngay,
-            # nên nếu lật trước thì cảnh báo và đường dẫn file có thể chưa kịp có mặt.
-            job.update_progress("mux", 1.0, "Hoàn tất")
-            job.mark_persisted_result(
-                result.video_path,
-                result.srt_path,
-                result.warnings,
-                result.attempted_count,
-                result.spoken_count,
+            self._finish_failed_job(
+                job,
+                "error",
+                f"Lỗi không lường trước: {exc}",
+                clear_result=publishing,
             )
-            job.mark_finished("done", job.message)
-            job.status = "done"
         self._persist(job)
 
     # ─── lưu và khôi phục ───────────────────────────────────────────
 
     def _persist(self, job: Job) -> None:
         """Ghi trạng thái xuống thư mục của job. Đĩa hỏng không được phép giết pipeline."""
-        data = job.snapshot()
-        data["video_path"] = job.video_path
-        data["srt_path"] = job.srt_path
+        with job.telemetry_lock:
+            data = job.snapshot()
+            persisted_artifacts = []
+            for artifact in job.artifacts:
+                path = _direct_child_path(job.workdir, artifact.path, require_relative=False)
+                if path is None:
+                    log.warning("Bỏ qua artifact không an toàn %s của job %s", artifact.id, job.id)
+                    continue
+                persisted_artifacts.append({**artifact.public(), "path": path.name})
+            data["artifacts"] = persisted_artifacts
+            by_id = {item["id"]: item["path"] for item in persisted_artifacts}
+            data["video_path"] = by_id.get("video", "")
+            data["srt_path"] = by_id.get("subtitle", "")
         try:
             (job.workdir / "job.json").write_text(
                 json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8"
@@ -487,17 +724,25 @@ class JobManager:
         for meta in jobs_dir.glob("*/job.json"):
             try:
                 data = json.loads(meta.read_text(encoding="utf-8"))
+                job_type = str(data.get("job_type", "video_dubbing"))
+                target_language = _legacy_target_language(data)
+                artifacts = _restore_artifacts(data, meta.parent)
+                if not artifacts and "artifacts" not in data:
+                    artifacts = _legacy_artifacts(data, meta.parent, target_language)
                 job = Job(
                     id=data["job_id"],
                     filename=data.get("filename", ""),
                     workdir=meta.parent,
                     voice_id=data.get("voice_id", ""),
+                    job_type=job_type,
+                    target_language=target_language,
+                    input_label=str(data.get("input_label", data.get("filename", ""))),
                     status=data.get("status", "error"),
-                    stage=data.get("stage", "extract"),
+                    stage=data.get("stage", STAGES_BY_JOB_TYPE.get(job_type, ("extract",))[0]),
                     percent=float(data.get("percent", 0.0)),
                     message=data.get("message", ""),
-                    video_path=data.get("video_path", ""),
-                    srt_path=data.get("srt_path", ""),
+                    artifacts=artifacts,
+                    degraded=bool(data.get("degraded", False)),
                     attempted_count=int(data.get("attempted_count", 0)),
                     spoken_count=int(data.get("spoken_count", 0)),
                     warnings=list(data.get("warnings", [])),

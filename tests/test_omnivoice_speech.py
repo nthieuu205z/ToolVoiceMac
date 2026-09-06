@@ -83,6 +83,17 @@ def test_synthesize_returns_pcm16_and_passes_vietnamese_generation_options():
     assert model.calls[0]["kwargs"]["generation_config"].postprocess_output is True
 
 
+def test_english_synthesis_passes_omnivoice_language_name():
+    voice_id = _make_clone("clone-english")
+    model = FakeOmni()
+
+    OmniVoiceSynthesizer(model=model, transcriber=FakeTranscriber()).synthesize(
+        "Welcome", voice_id, language="en-US"
+    )
+
+    assert model.calls[0]["kwargs"]["language"] == ["English"]
+
+
 def test_ref_text_is_computed_once_and_persisted():
     voice_id = _make_clone()
     transcriber = FakeTranscriber(text="mẫu")
@@ -120,6 +131,17 @@ def test_synthesize_batch_generates_all_items_in_one_call():
     assert len(model.calls) == 1
     assert model.calls[0]["text"] == texts
     assert model.calls[0]["ref_audio"] == [str(custom_voices.sample_path(voice_id))] * 3
+
+
+def test_english_batch_passes_omnivoice_language_for_every_item():
+    voice_id = _make_clone("clone-english-batch")
+    model = FakeOmni()
+
+    OmniVoiceSynthesizer(model=model, transcriber=FakeTranscriber()).synthesize_batch(
+        ["Hello", "Welcome"], voice_id, language="en-US"
+    )
+
+    assert model.calls[0]["kwargs"]["language"] == ["English", "English"]
 
 
 def test_synthesize_batch_rejects_more_than_configured_batch_limit(monkeypatch):

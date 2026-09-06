@@ -10,6 +10,16 @@ from pipeline.translate import translate_segments
 from tests.conftest import FakeGemini
 
 
+class RecordingBackend:
+    def __init__(self, result):
+        self.result = result
+        self.target_languages = []
+
+    def translate(self, texts, durations, context="", *, target_language="vi-VN"):
+        self.target_languages.append(target_language)
+        return list(self.result)
+
+
 def segments(n: int) -> list[Segment]:
     return [Segment(float(i), float(i) + 1.0, f"line {i}") for i in range(n)]
 
@@ -26,10 +36,57 @@ def test_the_prompt_forbids_dropping_content():
     assert "luôn chọn đủ ý" in _TRANSLATE_PROMPT
 
 
+def test_translation_writes_target_text_and_passes_target_language():
+    backend = RecordingBackend(result=["Hello"])
+    segment = Segment(0.0, 1.0, "Xin chào")
+
+    translate_segments(backend, [segment], target_language="en-US", workers=1)
+
+    assert segment.target_text == "Hello"
+    assert backend.target_languages == ["en-US"]
+
+
+def test_text_vi_alias_tracks_target_text_during_migration():
+    segment = Segment(0.0, 1.0, "source", target_text="first")
+    segment.text_vi = "second"
+    assert segment.target_text == "second"
+
+    segment.target_text = "third"
+    assert segment.text_vi == "third"
+
+
+def test_gemini_translation_uses_target_language_and_english_speaking_rate():
+    from pipeline.gemini import GeminiRunner, _TranslatedLine, _Translation
+
+    class Probe:
+        prompt = ""
+
+        def _generate_translation(self, prompt):
+            self.prompt = prompt
+            return object()
+
+        def _parse(self, response, schema):
+            return _Translation(lines=[_TranslatedLine(index=0, text="Hello")])
+
+    probe = Probe()
+
+    result = GeminiRunner.translate(
+        probe,
+        ["Xin chào"],
+        [2.0],
+        target_language="en-US",
+    )
+
+    assert result == ["Hello"]
+    assert "English (US)" in probe.prompt
+    assert "English" in probe.prompt
+    assert '"max_chars": 28' in probe.prompt
+
+
 def test_translations_land_on_matching_segments_in_order():
     backend = FakeGemini(translations=[["một", "hai", "ba"]])
     result = translate_segments(backend, segments(3))
-    assert [s.text_vi for s in result] == ["một", "hai", "ba"]
+    assert [s.target_text for s in result] == ["một", "hai", "ba"]
 
 
 def test_durations_are_passed_so_model_can_budget_line_length():
@@ -43,7 +100,7 @@ def test_wrong_line_count_triggers_exactly_one_retry_then_succeeds():
     backend = FakeGemini(translations=[["chỉ một dòng"], ["một", "hai"]])
     result = translate_segments(backend, segments(2))
     assert len(backend.translate_calls) == 2
-    assert [s.text_vi for s in result] == ["một", "hai"]
+    assert [s.target_text for s in result] == ["một", "hai"]
 
 
 def test_persistent_misalignment_raises_rather_than_desyncing_audio():
@@ -102,13 +159,18 @@ def test_batches_are_translated_in_parallel_and_results_stay_in_order():
             self.peak = 0
             self._lk = threading.Lock()
 
-        def translate(self, texts, durations, context=""):
+        def translate(self, texts, durations, context="", *, target_language="vi-VN"):
             with self._lk:
                 self.active += 1
                 self.peak = max(self.peak, self.active)
             time.sleep(0.15)
             try:
-                return super().translate(texts, durations, context)
+                return super().translate(
+                    texts,
+                    durations,
+                    context,
+                    target_language=target_language,
+                )
             finally:
                 with self._lk:
                     self.active -= 1
@@ -117,5 +179,5 @@ def test_batches_are_translated_in_parallel_and_results_stay_in_order():
     result = translate_segments(backend, segments(BATCH_SIZE * 3), workers=3)
 
     assert backend.peak >= 2                                        # thật sự chạy song song
-    assert [s.text_vi for s in result[:3]] == ["[vi] line 0", "[vi] line 1", "[vi] line 2"]
-    assert result[-1].text_vi == f"[vi] line {BATCH_SIZE * 3 - 1}"  # cuối cùng vẫn đúng chỗ
+    assert [s.target_text for s in result[:3]] == ["[vi] line 0", "[vi] line 1", "[vi] line 2"]
+    assert result[-1].target_text == f"[vi] line {BATCH_SIZE * 3 - 1}"  # cuối cùng vẫn đúng chỗ

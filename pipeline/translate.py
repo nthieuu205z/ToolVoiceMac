@@ -1,4 +1,4 @@
-"""Bước dịch: lời thoại gốc → tiếng Việt, giữ nguyên số dòng và thứ tự.
+"""Bước dịch: lời thoại gốc → ngôn ngữ đích, giữ nguyên số dòng và thứ tự.
 
 Số dòng phải khớp tuyệt đối: lệch một dòng là toàn bộ lời thoại phía sau lệch giờ,
 nên thà báo lỗi to còn hơn xuất ra video sai tiếng.
@@ -9,7 +9,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from .errors import JobCancelledError, TranslationAlignmentError
-from .models import CancelFn, GeminiBackend, ProgressFn, Segment, never_cancel, noop_progress
+from .models import CancelFn, ProgressFn, Segment, Translator, never_cancel, noop_progress
 
 # Dịch theo lô để câu lệnh không vượt giới hạn token đầu ra của model. Đo thật: mỗi lượt
 # gọi bị trói bởi SỐ TOKEN XUẤT (một dòng dịch = một dòng ra), nên lô 80 câu tốn ~20s.
@@ -26,13 +26,15 @@ TRANSLATE_WORKERS = 6
 
 
 def translate_segments(
-    backend: GeminiBackend,
+    backend: Translator,
     segments: list[Segment],
     progress: ProgressFn = noop_progress,
     should_cancel: CancelFn = never_cancel,
     workers: int = TRANSLATE_WORKERS,
+    *,
+    target_language: str = "vi-VN",
 ) -> list[Segment]:
-    """Điền `text_vi` cho từng lời thoại. Trả về chính danh sách đã truyền vào.
+    """Điền `target_text` cho từng lời thoại. Trả về chính danh sách đã truyền vào.
 
     Các lô dịch SONG SONG (ngữ cảnh lấy từ lời gốc nên độc lập nhau). Kết quả ghép lại đúng
     thứ tự segment — lệch một dòng là lệch giờ toàn bộ phía sau. Một lô lệch số dòng vẫn
@@ -49,7 +51,13 @@ def translate_segments(
     done = 0
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
         futures = {
-            pool.submit(_translate_batch, backend, batch, _context_from(segments[:offset])):
+            pool.submit(
+                _translate_batch,
+                backend,
+                batch,
+                _context_from(segments[:offset]),
+                target_language,
+            ):
                 (offset, batch)
             for offset, batch in batches
         }
@@ -59,8 +67,8 @@ def translate_segments(
                 raise JobCancelledError()
             _offset, batch = futures[future]
             translations = future.result()   # lệch số dòng → ném lỗi, dừng cả bước dịch
-            for seg, text_vi in zip(batch, translations):
-                seg.text_vi = text_vi
+            for seg, target_text in zip(batch, translations):
+                seg.target_text = target_text
             done += len(batch)
             progress("translate", done / total, f"Đang dịch {done}/{total}")
 
@@ -68,13 +76,23 @@ def translate_segments(
     return segments
 
 
-def _translate_batch(backend: GeminiBackend, batch: list[Segment], context: str) -> list[str]:
+def _translate_batch(
+    backend: Translator,
+    batch: list[Segment],
+    context: str,
+    target_language: str,
+) -> list[str]:
     """Gọi model, kiểm tra khớp số dòng, thử lại một lần trước khi bỏ cuộc."""
     texts = [seg.text for seg in batch]
     durations = [seg.duration for seg in batch]
 
     for attempt in (1, 2):
-        result = backend.translate(texts, durations, context)
+        result = backend.translate(
+            texts,
+            durations,
+            context,
+            target_language=target_language,
+        )
         if _is_aligned(result, len(batch)):
             return result
         if attempt == 2:

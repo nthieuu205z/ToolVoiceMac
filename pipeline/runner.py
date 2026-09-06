@@ -11,6 +11,7 @@ from .assembly import build_audio_track, plan_placement
 from .audio import read_wav
 from .errors import JobCancelledError
 from .extract_audio import extract_audio
+from .languages import normalize_language_code
 from .models import (
     CancelFn,
     GeminiBackend,
@@ -34,6 +35,7 @@ log = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class PipelineOptions:
     voice_id: str
+    target_language: str = "vi-VN"
     max_utterance_seconds: float = 12.0
     max_utterance_gap: float = 0.5
     # Đặt câu theo mốc thời gian cấp câu của Whisper (bám hình sát hơn). Mặc định True;
@@ -117,18 +119,35 @@ def run_pipeline(
     warnings.extend(stt_warnings)
 
     # 2b. Gộp mảnh vụn thành câu trọn theo dấu câu: ffmpeg cắt theo im lặng nên hay chẻ
-    # một câu thành nhiều vùng ở chỗ ngừng lấy hơi. Gộp lại cho tiếng Việt liền mạch,
+    # một câu thành nhiều vùng ở chỗ ngừng lấy hơi. Gộp lại cho bản dịch liền mạch,
     # dịch đúng cả câu, và hết cảnh "Hôm ...(nghỉ)... nay".
     segments = merge_sentence_fragments(segments, options.max_utterance_seconds)
     mark("Nhận diện + tách câu")
 
     # 3. Dịch (các lô chạy song song — xem pipeline/translate.py)
-    segments = translate_segments(backend, segments, progress, should_cancel,
-                                  workers=options.translate_workers)
+    target_language = normalize_language_code(options.target_language)
+    try:
+        source_language = normalize_language_code(language)
+    except ValueError:
+        # Gemini/Whisper có thể nhận diện ngôn ngữ nguồn ngoài danh mục đích hỗ trợ.
+        source_language = language
+    if source_language == target_language:
+        for segment in segments:
+            segment.target_text = segment.text
+        progress("translate", 1.0, "Ngôn ngữ nguồn đã trùng ngôn ngữ đích")
+    else:
+        segments = translate_segments(
+            backend,
+            segments,
+            progress,
+            should_cancel,
+            workers=options.translate_workers,
+            target_language=target_language,
+        )
     mark("Dịch")
 
     # 4. Tạo giọng đọc
-    attempted = sum(1 for seg in segments if seg.text_vi.strip())
+    attempted = sum(1 for seg in segments if seg.target_text.strip())
     progress("synthesize", 0.0, "Đang khởi tạo engine giọng đọc")
     if options.tts_is_metered and attempted > options.tts_daily_budget:
         warnings.append(
@@ -138,6 +157,7 @@ def run_pipeline(
 
     fitted, tts_warnings = synthesize_segments(
         backend, segments, options.voice_id,
+        language=target_language,
         workers=options.tts_workers,
         max_speedup=options.tts_max_speedup,
         total_duration=media.duration,
@@ -156,7 +176,8 @@ def run_pipeline(
     # 5. Phụ đề — dựng SAU giọng đọc để cue bám theo thời lượng đọc thật
     abort_if_cancelled()
     progress("subtitle", 0.0, "Đang dựng file phụ đề")
-    srt_path = workdir / "output.srt"
+    output_suffix = "_en" if target_language == "en-US" else ""
+    srt_path = workdir / f"output{output_suffix}.srt"
     srt_path.write_text(build_srt(segments), encoding="utf-8")
     progress("subtitle", 1.0, "Đã tạo phụ đề")
     mark("Phụ đề")
@@ -171,7 +192,7 @@ def run_pipeline(
     # 7. Ghép vào video, loại bỏ hoàn toàn audio gốc
     abort_if_cancelled()
     progress("mux", 0.0, "Đang ghép âm thanh vào video")
-    out_video = run_mux(video_path, dubbed_wav, workdir / "output.mp4")
+    out_video = run_mux(video_path, dubbed_wav, workdir / f"output{output_suffix}.mp4")
     progress("mux", 1.0, "Hoàn tất")
     mark("Ghép vào video (mux)")
 
@@ -185,6 +206,7 @@ def run_pipeline(
         video_path=str(out_video),
         srt_path=str(srt_path),
         language=language,
+        target_language=target_language,
         segment_count=len(segments),
         attempted_count=attempted,
         spoken_count=len(fitted),

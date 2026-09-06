@@ -8,7 +8,8 @@ def test_sse_snapshot_renders_queue_after_selected_job_updates():
     source = (ROOT / "app.js").read_text(encoding="utf-8")
 
     assert "renderGraphFlow(snapshot)" not in source
-    assert "updateGraphFlow(snapshot)" in source
+    assert "renderSelectedJob(); renderEvents(snapshot);" in source
+    assert "renderGraph(job);" in source
 
 
 def test_selected_job_has_no_duplicate_processing_progress_bar():
@@ -23,7 +24,14 @@ def test_selected_job_has_no_duplicate_processing_progress_bar():
 def test_finished_job_marks_export_node_completed():
     source = (ROOT / "app.js").read_text(encoding="utf-8")
 
-    assert 'job.status === "done" ? index <= currentIndex : index < currentIndex' in source
+    assert 'job.status === "done" || knownStage && index < currentIndex' in source
+    assert 'job.status === "done" || index < flowIndex' in source
+
+
+def test_finished_unknown_stage_still_completes_every_graph_rail():
+    source = (ROOT / "app.js").read_text(encoding="utf-8")
+
+    assert 'updateGraphFlow(knownStage || job.status === "done" ? job : null)' in source
 
 
 def test_selected_voice_label_fits_inside_action_group():

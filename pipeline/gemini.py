@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import cast, overload
 
 from google import genai
 from google.genai import types
@@ -23,6 +24,7 @@ from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponen
 
 from .audio import parse_pcm_rate, resample_pcm
 from .errors import GeminiAPIError, QuotaExhaustedError
+from .languages import require_language
 from .models import TTS_SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -110,7 +112,7 @@ class _ClipTranscript(BaseModel):
 
 class _TranslatedLine(BaseModel):
     index: int
-    text_vi: str
+    text: str
 
 
 class _Translation(BaseModel):
@@ -128,14 +130,14 @@ Chép nguyên văn lời thoại trong đoạn audio này.
 
 _TRANSLATE_PROMPT = """\
 Bạn là biên dịch viên lồng tiếng phim chuyên nghiệp. Hãy dịch từng dòng thoại sang
-TIẾNG VIỆT tự nhiên như người Việt nói chuyện.
+{target_display_name} ({target_name}) tự nhiên như người bản ngữ nói chuyện.
 
 Quy tắc bắt buộc:
 - Trả về ĐÚNG {count} dòng, giữ nguyên `index` của từng dòng đầu vào.
 - Dịch ĐẦY ĐỦ mọi ý của câu gốc. TUYỆT ĐỐI không lược bỏ thông tin, không tóm tắt,
   không gộp ý — thiếu ý là lỗi nặng hơn dài dòng.
-- `duration_seconds` là khung thời gian của câu gốc (giọng đọc chạy khoảng 16 ký tự
-  mỗi giây, `max_chars` là mức vừa khung). Hãy CHỌN CÁCH DIỄN ĐẠT gọn và khẩu ngữ
+- `duration_seconds` là khung thời gian của câu gốc; `max_chars` là mức vừa khung
+  theo tốc độ nói của ngôn ngữ đích. Hãy CHỌN CÁCH DIỄN ĐẠT gọn và khẩu ngữ
   tự nhiên để đọc kịp; nhưng khi phải chọn giữa đủ ý và ngắn, luôn chọn đủ ý.
 - Giữ nhất quán tên riêng, xưng hô và thuật ngữ xuyên suốt toàn bộ video.
 - Chỉ trả về lời thoại đã dịch, không chú thích, không dấu ngoặc mô tả.
@@ -144,8 +146,32 @@ Các dòng cần dịch (JSON):
 {payload}
 """
 
-# Đo thực nghiệm: 560 ký tự tiếng Việt → 33.7 giây giọng đọc.
-CHARS_PER_SECOND = 16.6
+# Tốc độ nói đo/ước lượng cho ngân sách độ dài từng ngôn ngữ đích.
+_SPEAKING_RATES = {"vi-VN": 16.6, "en-US": 14.0}
+
+
+def _format_context(context: str) -> str:
+    if not context:
+        return ""
+    return f"\nNgữ cảnh các dòng ngay trước đó (ngôn ngữ nguồn):\n{context}\n"
+
+
+def _translation_payload(
+    texts: list[str], durations: list[float], target_language: str
+) -> str:
+    chars_per_second = _SPEAKING_RATES[target_language]
+    return json.dumps(
+        [
+            {
+                "index": index,
+                "duration_seconds": round(duration, 1),
+                "max_chars": max(20, int(duration * chars_per_second)),
+                "text": text,
+            }
+            for index, (text, duration) in enumerate(zip(texts, durations))
+        ],
+        ensure_ascii=False,
+    )
 
 # Không đưa lời thoại trần vào TTS: gặp câu hỏi, model tưởng là câu lệnh và định trả lời
 # ("Model tried to generate text, but it should only be used for TTS"). Đã kiểm chứng
@@ -154,6 +180,13 @@ _TTS_INSTRUCTION = (
     "Đọc to nguyên văn đoạn văn bản sau bằng giọng tự nhiên. "
     "Không trả lời, không bình luận, không thêm bớt:\n\n"
 )
+
+
+class _OmittedLanguage:
+    pass
+
+
+_OMITTED_LANGUAGE = _OmittedLanguage()
 
 
 class GeminiRunner:
@@ -240,26 +273,24 @@ class GeminiRunner:
 
     # ─── dịch ───────────────────────────────────────────────────────
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
-        payload = json.dumps(
-            [
-                {
-                    "index": i,
-                    "duration_seconds": round(d, 1),
-                    "max_chars": max(20, int(d * CHARS_PER_SECOND)),
-                    "text": t,
-                }
-                for i, (t, d) in enumerate(zip(texts, durations))
-            ],
-            ensure_ascii=False,
-        )
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
+        language = require_language(target_language)
         prompt = _TRANSLATE_PROMPT.format(
+            target_display_name=language.display_name,
+            target_name=language.english_name,
             count=len(texts),
-            context=f"\nNgữ cảnh các dòng ngay trước đó (đã dịch):\n{context}\n" if context else "",
-            payload=payload,
+            context=_format_context(context),
+            payload=_translation_payload(texts, durations, language.code),
         )
         parsed = self._parse(self._generate_translation(prompt), _Translation)
-        by_index = {line.index: line.text_vi.strip() for line in parsed.lines}
+        by_index = {line.index: line.text.strip() for line in parsed.lines}
         return [by_index.get(i, "") for i in range(len(texts))]
 
     @_retry
@@ -293,14 +324,37 @@ class GeminiRunner:
 
     # ─── tạo giọng đọc ──────────────────────────────────────────────
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
+    @overload
+    def synthesize(self, text: str, voice_id: str) -> bytes: ...
+
+    @overload
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str
+    ) -> bytes: ...
+
+    def synthesize(
+        self,
+        text: str,
+        voice_id: str,
+        *,
+        language: str | _OmittedLanguage = _OMITTED_LANGUAGE,
+    ) -> bytes:
         """Mỗi lượt thoại được một cơ hội, kể cả khi hạn mức ngày đã báo cạn.
 
         Hạn mức của Google rò rỉ: đo thực tế thấy 3/8 request vẫn qua sau khi đã nhận 429
         theo ngày. Chặn hết từ lỗi đầu tiên là vứt oan những lượt lẽ ra đọc được. Cái phải
         bỏ là RETRY (429 theo ngày bảo đợi hơn 4 tiếng), không phải bản thân lần thử.
         """
-        response = self._generate_speech(text, voice_id)
+        requested_language = (
+            self._tts_language_code
+            if language is _OMITTED_LANGUAGE
+            else cast(str, language)
+        )
+        language_code = require_language(requested_language).gemini_tts_code
+        response = self._generate_speech(text, voice_id, language_code)
+        return self._audio_bytes_or_raise(response)
+
+    def _audio_bytes_or_raise(self, response: types.GenerateContentResponse) -> bytes:
         for part in self._parts(response):
             inline = getattr(part, "inline_data", None)
             if inline is not None and inline.data:
@@ -313,15 +367,21 @@ class GeminiRunner:
         )
 
     @_retry
-    def _generate_speech(self, text: str, voice_id: str) -> types.GenerateContentResponse:
+    def _generate_speech(
+        self, text: str, voice_id: str, language_code: str
+    ) -> types.GenerateContentResponse:
         with_language = not self._tts_language_code_rejected
         try:
-            response = self._speech_call(text, voice_id, with_language=with_language)
+            response = self._speech_call(
+                text, voice_id, language_code, with_language=with_language
+            )
         except genai_errors.APIError as exc:
             if exc.code == 400 and with_language:
                 self._reject_language_code("model trả lỗi 400")
                 try:
-                    return self._speech_call(text, voice_id, with_language=False)
+                    return self._speech_call(
+                        text, voice_id, language_code, with_language=False
+                    )
                 except genai_errors.APIError as retry_exc:
                     raise self._wrap(retry_exc, "tạo giọng đọc")
             raise self._wrap(exc, "tạo giọng đọc")
@@ -330,7 +390,9 @@ class GeminiRunner:
         if with_language and not self._has_audio(response):
             self._reject_language_code(f"model trả 200 nhưng không có audio "
                                        f"(finish_reason={self._finish_reason(response)})")
-            return self._speech_call(text, voice_id, with_language=False)
+            return self._speech_call(
+                text, voice_id, language_code, with_language=False
+            )
         return response
 
     def _reject_language_code(self, reason: str) -> None:
@@ -338,14 +400,25 @@ class GeminiRunner:
             log.info("Model TTS từ chối language_code (%s) — thử lại không kèm trường này", reason)
         self._tts_language_code_rejected = True
 
-    def _speech_call(self, text: str, voice_id: str, *, with_language: bool):
+    @staticmethod
+    def _voice_config(voice_id: str) -> types.VoiceConfig:
+        return types.VoiceConfig(
+            prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_id)
+        )
+
+    def _speech_call(
+        self,
+        text: str,
+        voice_id: str,
+        language_code: str,
+        *,
+        with_language: bool,
+    ):
         speech_kwargs: dict = {
-            "voice_config": types.VoiceConfig(
-                prebuilt_voice_config=types.PrebuiltVoiceConfig(voice_name=voice_id)
-            )
+            "voice_config": self._voice_config(voice_id)
         }
-        if with_language and self._tts_language_code:
-            speech_kwargs["language_code"] = self._tts_language_code
+        if with_language and language_code:
+            speech_kwargs["language_code"] = language_code
 
         return self._client.models.generate_content(
             model=self._tts_model,

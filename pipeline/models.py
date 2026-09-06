@@ -5,21 +5,45 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import Callable, Protocol
 
-# Thứ tự các bước, khớp với `data-stage` trong web/static/index.html.
+# Thứ tự các bước video khớp với `data-stage` trong web/static/index.html.
 # Phụ đề dựng SAU giọng đọc: mốc thời gian của cue bám theo thời lượng đọc thật,
 # nếu dựng trước thì phụ đề trải đều trên khung gốc và trôi khỏi tiếng nói.
-STAGES = ["extract", "transcribe", "translate", "synthesize", "subtitle", "assemble", "mux"]
+VIDEO_STAGES = (
+    "extract",
+    "transcribe",
+    "translate",
+    "synthesize",
+    "subtitle",
+    "assemble",
+    "mux",
+)
+TEXT_STAGES = ("prepare", "synthesize", "assemble", "export")
 
-# Tỉ trọng thời gian của từng bước, dùng để quy đổi ra phần trăm tổng.
-STAGE_WEIGHTS = {
-    "extract": 5,
-    "transcribe": 25,
-    "translate": 15,
-    "synthesize": 40,
-    "subtitle": 2,
-    "assemble": 8,
-    "mux": 5,
+STAGES_BY_JOB_TYPE = {
+    "video_dubbing": VIDEO_STAGES,
+    "text_to_voice": TEXT_STAGES,
 }
+STAGE_WEIGHTS_BY_JOB_TYPE = {
+    "video_dubbing": {
+        "extract": 5,
+        "transcribe": 25,
+        "translate": 15,
+        "synthesize": 40,
+        "subtitle": 2,
+        "assemble": 8,
+        "mux": 5,
+    },
+    "text_to_voice": {
+        "prepare": 5,
+        "synthesize": 75,
+        "assemble": 10,
+        "export": 10,
+    },
+}
+
+# Tên tương thích cho mọi caller video cũ và các kiểm thử frontend hiện tại.
+STAGES = list(VIDEO_STAGES)
+STAGE_WEIGHTS = STAGE_WEIGHTS_BY_JOB_TYPE["video_dubbing"]
 
 # Định dạng âm thanh Gemini TTS trả về, cũng là định dạng track lồng tiếng.
 TTS_SAMPLE_RATE = 24_000
@@ -45,13 +69,22 @@ class Segment:
     start: float
     end: float
     text: str
-    text_vi: str = ""
+    target_text: str = ""
     # Thời lượng giọng đọc thật sau khi tạo, thường ngắn hơn khung gốc.
     # Phụ đề bám theo con số này để không trôi ra khỏi tiếng nói.
     spoken_duration: float = 0.0
     # Mốc phát THẬT sau bước xếp chỗ (plan_placement): thường bằng `start`, nhưng bị
     # đẩy lùi khi lượt trước tràn khung — phụ đề phải bám theo đây, không theo `start`.
     placed_start: float | None = None
+
+    @property
+    def text_vi(self) -> str:
+        """Tên tương thích trong thời gian chuyển sang nội dung đích trung lập."""
+        return self.target_text
+
+    @text_vi.setter
+    def text_vi(self, value: str) -> None:
+        self.target_text = value
 
     @property
     def duration(self) -> float:
@@ -76,6 +109,7 @@ class PipelineResult:
     video_path: str
     srt_path: str
     language: str = ""
+    target_language: str = "vi-VN"
     segment_count: int = 0
     attempted_count: int = 0
     spoken_count: int = 0
@@ -97,29 +131,50 @@ def never_cancel() -> bool:
     return False
 
 
-def overall_percent(stage: str, fraction: float) -> float:
-    """Quy đổi tiến độ trong một bước thành phần trăm của toàn bộ pipeline."""
-    total = sum(STAGE_WEIGHTS.values())
-    done = sum(STAGE_WEIGHTS[s] for s in STAGES[: STAGES.index(stage)])
+def overall_percent(
+    stage: str,
+    fraction: float,
+    job_type: str = "video_dubbing",
+    fallback: float | None = None,
+) -> float:
+    """Quy đổi tiến độ theo loại job; stage cũ không làm hỏng dữ liệu khôi phục."""
+    stages = STAGES_BY_JOB_TYPE.get(job_type)
+    weights = STAGE_WEIGHTS_BY_JOB_TYPE.get(job_type)
+    if stages is None or weights is None or stage not in stages:
+        return fallback if fallback is not None else 0.0
+
+    total = sum(weights.values())
+    done = sum(weights[item] for item in stages[: stages.index(stage)])
     fraction = min(1.0, max(0.0, fraction))
-    return round((done + STAGE_WEIGHTS[stage] * fraction) / total * 100, 1)
+    return round((done + weights[stage] * fraction) / total * 100, 1)
 
 
-class GeminiBackend(Protocol):
-    """Bề mặt Gemini mà pipeline cần. Test tiêm bản giả để không gọi API thật.
-
-    Lưu ý: KHÔNG hỏi Gemini mốc thời gian. Trên Developer API nó bịa ra
-    (xem pipeline/segmentation.py). Thời gian lấy từ ffmpeg, Gemini chỉ chép chữ.
-    """
-
+class SpeechRecognizer(Protocol):
     def transcribe_clip(self, wav_path) -> tuple[str, str]:
         """Trả về (mã ngôn ngữ nguồn, nguyên văn lời thoại) của một đoạn audio ngắn."""
         ...
 
-    def translate(self, texts: list[str], durations: list[float], context: str = "") -> list[str]:
-        """Dịch sang tiếng Việt, trả về đúng số phần tử và đúng thứ tự như đầu vào."""
+
+class Translator(Protocol):
+    def translate(
+        self,
+        texts: list[str],
+        durations: list[float],
+        context: str = "",
+        *,
+        target_language: str = "vi-VN",
+    ) -> list[str]:
+        """Dịch sang ngôn ngữ đích, trả về đúng số phần tử và đúng thứ tự như đầu vào."""
         ...
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
+
+class SpeechSynthesizer(Protocol):
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
         """Trả về PCM 16-bit little-endian, mono, TTS_SAMPLE_RATE Hz."""
         ...
+
+
+class GeminiBackend(SpeechRecognizer, Translator, SpeechSynthesizer, Protocol):
+    """Tên tương thích tạm thời cho backend có đủ ba khả năng của pipeline."""

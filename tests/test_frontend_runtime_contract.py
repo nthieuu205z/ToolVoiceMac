@@ -35,7 +35,7 @@ def test_upload_submission_has_an_explicit_ready_path():
     js = (ROOT / "app.js").read_text(encoding="utf-8")
 
     assert "state.selectedFile = isVideoFile(file) ? file : null" in js
-    assert "Boolean(state.selectedFile && $(\"#voiceSelect\").value" in js
+    assert "Boolean(state.selectedFile && $(\"#videoVoiceSelect\").value" in js
     assert "xhr.send(form)" in js
     assert "xhr.onload" in js
 

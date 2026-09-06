@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Tạo các file nghe thử giọng đọc cho giao diện. Chỉ cần chạy một lần.
+"""Tạo các file nghe thử đa ngôn ngữ cho giao diện.
 
     ./.venv/bin/python scripts/generate_voice_previews.py
 
-Ghi ra web/static/previews/<VoiceId>.wav: preset dùng TTS_PROVIDER, clone dùng OmniVoice.
+Ghi ra web/static/previews/<VoiceId>/<language>.wav.
 Dùng --force để tạo lại các file đã có.
 """
 
@@ -17,12 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from backend.config import settings  # noqa: E402
 from pipeline import custom_voices  # noqa: E402
-from pipeline.audio import pcm_to_array, write_wav  # noqa: E402
 from pipeline.backends import build_backend  # noqa: E402
 from pipeline.ffmpeg_utils import set_binaries  # noqa: E402
+from pipeline.voice_previews import VoicePreviewStore  # noqa: E402
 from pipeline.voices import available_voices  # noqa: E402
-
-PREVIEW_TEXT = "Xin chào, đây là giọng đọc tiếng Việt dùng để lồng tiếng cho video của bạn."
 
 
 def main() -> int:
@@ -42,6 +40,7 @@ def main() -> int:
         return 1
 
     settings.previews_dir.mkdir(parents=True, exist_ok=True)
+    store = VoicePreviewStore(settings.previews_dir)
     voices = available_voices(settings.tts_provider, settings.resolved_clone_provider)
     backend_cache = {}
     print(f"Giọng preset: {settings.tts_provider}; tổng cộng {len(voices)} giọng\n")
@@ -52,14 +51,32 @@ def main() -> int:
         if provider not in backend_cache:
             backend_cache[provider] = build_backend(settings.provider_config_for(provider))
         backend = backend_cache[provider]
-        dest = settings.previews_dir / f"{voice.id}.wav"
-        if dest.is_file() and not args.force:
-            print(f"  bỏ qua {voice.id} (đã có)")
+        languages = tuple(
+            language
+            for language in voice.supported_languages
+            if args.force or not store.path(voice.id, language).is_file()
+        )
+        if not languages:
+            print(f"  bỏ qua {voice.id} (đã có đủ ngôn ngữ)")
             continue
         try:
-            pcm = backend.synthesize(PREVIEW_TEXT, voice.id)
-            write_wav(dest, pcm_to_array(pcm))
-            print(f"  đã tạo {voice.id}.wav")
+            if args.force:
+                store.clear(voice.id)
+                languages = tuple(voice.supported_languages)
+            store.generate_languages(voice.id, languages, backend)
+            failed_languages = [
+                language
+                for language in languages
+                if store.status(voice.id, language) != "ready"
+            ]
+            if failed_languages:
+                failed += len(failed_languages)
+                print(
+                    f"  lỗi với giọng {voice.id}: {', '.join(failed_languages)}",
+                    file=sys.stderr,
+                )
+            else:
+                print(f"  đã tạo {voice.id}: {', '.join(languages)}")
         except Exception as exc:
             failed += 1
             print(f"  lỗi với giọng {voice.id}: {exc}", file=sys.stderr)

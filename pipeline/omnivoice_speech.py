@@ -12,6 +12,7 @@ import numpy as np
 
 from . import custom_voices
 from .errors import SpeechServiceError
+from .languages import require_language
 from .models import TTS_SAMPLE_RATE
 
 log = logging.getLogger(__name__)
@@ -271,10 +272,14 @@ class OmniVoiceSynthesizer:
     def mps_batch_safe(self) -> bool:
         return mps_batch_safe()
 
-    def synthesize(self, text: str, voice_id: str) -> bytes:
-        return self._generate([text], voice_id)[0]
+    def synthesize(
+        self, text: str, voice_id: str, *, language: str = "vi-VN"
+    ) -> bytes:
+        return self._generate([text], voice_id, language=language)[0]
 
-    def synthesize_batch(self, texts: list[str], voice_id: str) -> list[bytes]:
+    def synthesize_batch(
+        self, texts: list[str], voice_id: str, *, language: str = "vi-VN"
+    ) -> list[bytes]:
         if not texts:
             return []
         limit = self.batch_size
@@ -283,9 +288,12 @@ class OmniVoiceSynthesizer:
                 f"OmniVoice nhận {len(texts)} câu, vượt cỡ lô tối đa {limit}",
                 user_message="Lô giọng đọc quá lớn; pipeline cần chia nhỏ lô.",
             )
-        return self._generate(list(texts), voice_id)
+        return self._generate(list(texts), voice_id, language=language)
 
-    def _generate(self, texts: list[str], voice_id: str) -> list[bytes]:
+    def _generate(
+        self, texts: list[str], voice_id: str, *, language: str
+    ) -> list[bytes]:
+        upstream_language = require_language(language).omnivoice_name
         if not custom_voices.is_custom(voice_id):
             raise SpeechServiceError(
                 f"OmniVoice chỉ đọc bằng giọng nhân bản: {voice_id}",
@@ -313,7 +321,7 @@ class OmniVoiceSynthesizer:
             with _INFER_LOCK:
                 generation_config = self._generation_config()
                 kwargs: dict[str, Any] = {
-                    "language": ["Vietnamese"] * count,
+                    "language": [upstream_language] * count,
                 }
                 if generation_config is None:
                     kwargs.update(
