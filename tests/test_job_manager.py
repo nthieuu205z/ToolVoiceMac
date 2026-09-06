@@ -304,6 +304,23 @@ def test_message_is_set_before_status_flips_to_error(tmp_path, monkeypatch):
     assert job.captured["message"] == NoSpeechDetectedError.user_message
 
 
+def test_start_rolls_back_registry_when_initial_persistence_fails(tmp_path, monkeypatch):
+    manager = JobManager(max_workers=1)
+    monkeypatch.setattr(
+        manager,
+        "_persist",
+        lambda job: (_ for _ in ()).throw(OSError("disk full")),
+    )
+
+    with pytest.raises(OSError, match="disk full"):
+        _start(manager, tmp_path)
+
+    assert manager.jobs() == []
+    assert manager.current is None
+    assert manager.is_busy() is False
+    assert manager._futures == {}
+
+
 def test_two_jobs_run_at_the_same_time(tmp_path):
     """Video thứ hai không phải chờ video thứ nhất."""
     both_running = threading.Barrier(3, timeout=10)

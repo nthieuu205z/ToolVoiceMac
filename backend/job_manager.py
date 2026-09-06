@@ -525,13 +525,13 @@ class JobManager:
         )
         with self._lock:
             self._jobs[job.id] = job
-        self._persist(job)
-
         try:
+            self._persist(job)
             future = self._ensure_executor().submit(self._run, job, backend_factory, runner)
         except Exception:
             with self._lock:
                 self._jobs.pop(job.id, None)
+                self._futures.pop(job.id, None)
             raise
         self._futures[job.id] = future
         return job

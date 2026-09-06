@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
 import shutil
 import uuid
@@ -20,6 +22,7 @@ from pipeline.text_to_voice import SpeechResult, TextToVoiceOptions, run_text_to
 from pipeline.voices import is_available, route_provider
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 _KEEP_JOB_DIRS = 10
 _MAX_TEXT_CHARACTERS = 50_000
@@ -91,9 +94,22 @@ def _reserve_workdir(jobs_dir: Path) -> tuple[str, Path]:
         return job_id, workdir
 
 
+def _write_private_text(path: Path, text: str) -> None:
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    descriptor = os.open(path, flags, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+        stream.write(text)
+
+
 def _remove_workdir(workdir: Path | None) -> None:
-    if workdir is not None:
-        shutil.rmtree(workdir, ignore_errors=True)
+    if workdir is None:
+        return
+    try:
+        shutil.rmtree(workdir)
+    except FileNotFoundError:
+        return
+    except OSError:
+        log.exception("Không thể dọn thư mục công việc %s", workdir)
 
 
 @router.post("/api/jobs/text")
@@ -137,8 +153,7 @@ def create_text_job(request: TextJobRequest) -> dict:
     try:
         job_id, workdir = _reserve_workdir(settings.jobs_dir)
         input_path = workdir / "input.txt"
-        input_path.write_text(text, encoding="utf-8")
-        input_path.chmod(0o600)
+        _write_private_text(input_path, text)
     except OSError as exc:
         _remove_workdir(workdir)
         raise HTTPException(500, "Không thể lưu nội dung công việc.") from exc

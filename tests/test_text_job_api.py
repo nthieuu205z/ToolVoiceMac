@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import time
 from types import SimpleNamespace
@@ -193,7 +194,7 @@ def test_text_job_returns_server_error_when_private_input_cannot_be_persisted(
     def fail_write(*args, **kwargs):
         raise OSError("disk full")
 
-    monkeypatch.setattr(text_jobs.Path, "write_text", fail_write)
+    monkeypatch.setattr(text_jobs, "_write_private_text", fail_write)
     response = client.post(
         "/api/jobs/text",
         json={
@@ -205,6 +206,38 @@ def test_text_job_returns_server_error_when_private_input_cannot_be_persisted(
 
     assert response.status_code == 500
     assert list(jobs_dir.iterdir()) == []
+
+
+def test_private_input_is_created_exclusively_with_mode_0600(tmp_path, monkeypatch):
+    input_path = tmp_path / "input.txt"
+    real_open = os.open
+    observed = {}
+
+    def capture_open(path, flags, mode):
+        observed.update(flags=flags, mode=mode)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(text_jobs.os, "open", capture_open)
+    text_jobs._write_private_text(input_path, "private narration")
+
+    assert observed["flags"] & os.O_EXCL
+    assert observed["mode"] == 0o600
+    assert stat.S_IMODE(input_path.stat().st_mode) == 0o600
+    assert input_path.read_text(encoding="utf-8") == "private narration"
+
+
+def test_cleanup_failure_is_logged(tmp_path, monkeypatch, caplog):
+    workdir = tmp_path / "job"
+    workdir.mkdir()
+
+    def fail_remove(path):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(text_jobs.shutil, "rmtree", fail_remove)
+    text_jobs._remove_workdir(workdir)
+
+    assert "Không thể dọn thư mục công việc" in caplog.text
+    assert str(workdir) in caplog.text
 
 
 def test_text_job_cleans_workdir_when_manager_start_fails(client, jobs_dir, monkeypatch):
@@ -322,6 +355,8 @@ def test_text_job_runs_in_shared_queue_and_publishes_wav_and_mp3(
     assert response.status_code == 200
     job_id = response.json()["job_id"]
     job = wait_until_terminal(client, job_id)
+    listed = client.get("/api/jobs").json()["jobs"]
+    assert any(item["job_id"] == job_id for item in listed)
     assert job["job_type"] == "text_to_voice"
     assert job["target_language"] == "en-US"
     assert {artifact["kind"] for artifact in job["artifacts"]} == {"wav", "mp3"}
