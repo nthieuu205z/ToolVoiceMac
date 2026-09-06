@@ -116,6 +116,14 @@ def test_on_demand_preview_can_be_stopped_without_starting_another_request():
     assert "if (activePreview?.button === button) { abortTextPreview(); return; }" in JS
 
 
+def test_on_demand_preview_releases_audio_state_and_object_url_on_every_terminal_path():
+    assert "function releaseTextPreview" in JS
+    assert "URL.revokeObjectURL(state.textPreviewUrl)" in JS
+    assert "let token = null;" in JS
+    assert "const finish = () => releaseTextPreview(token);" in JS
+    assert "releaseTextPreview(token);" in JS.split("catch (error)", 1)[1]
+
+
 def test_multilingual_composer_has_accessible_responsive_styles():
     assert ".job-mode-tabs" in CSS
     assert ":focus-visible" in CSS

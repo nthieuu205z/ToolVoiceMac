@@ -429,7 +429,16 @@ function submitUpload(event) {
 
 function showTextError(message, focus = false) { const box = $("#textJobError"); $("#textJobErrorText").textContent = message; box.hidden = false; if (focus) box.focus(); }
 function clearTextError() { $("#textJobError").hidden = true; $("#textJobErrorText").textContent = ""; }
-function abortTextPreview() { if (state.textPreviewController) state.textPreviewController.abort(); state.textPreviewController = null; stopActivePreview(); if (state.textPreviewUrl) URL.revokeObjectURL(state.textPreviewUrl); state.textPreviewUrl = ""; if ($("#textPreviewButton")) { $("#textPreviewButton").disabled = false; $("#textPreviewButton").textContent = "Nghe thử nội dung"; } }
+function releaseTextPreview(token = null) {
+  if (token !== null && activePreview?.token !== token) return;
+  const button = $("#textPreviewButton");
+  if (activePreview?.button === button) { activePreview.audio.pause(); activePreview = null; }
+  if (state.textPreviewUrl) URL.revokeObjectURL(state.textPreviewUrl);
+  state.textPreviewUrl = "";
+  if (button) { button.disabled = false; button.textContent = "Nghe thử nội dung"; }
+  updateTextState();
+}
+function abortTextPreview() { if (state.textPreviewController) state.textPreviewController.abort(); state.textPreviewController = null; stopActivePreview(); releaseTextPreview(); }
 function updateTextState() {
   const text = $("#textInput").value;
   const trimmed = text.trim();
@@ -451,14 +460,15 @@ async function previewText() {
   if (activePreview?.button === button) { abortTextPreview(); return; }
   abortTextPreview(); clearTextError();
   const controller = new AbortController(); state.textPreviewController = controller; button.disabled = true; button.textContent = "Đang tạo bản nghe thử…"; announce("Đang tạo bản nghe thử nội dung.");
+  let token = null;
   try {
     const response = await fetch(`/api/voices/${encodeURIComponent(voiceId)}/preview-text`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, language }), signal: controller.signal });
     if (!response.ok) { const body = await response.json().catch(() => ({})); throw new Error(body.detail || `Request thất bại (${response.status})`); }
     const blob = await response.blob(); if (controller.signal.aborted) return;
-    state.textPreviewUrl = URL.createObjectURL(blob); const audio = new Audio(state.textPreviewUrl); const token = ++state.previewToken; activePreview = { audio, button, token }; button.textContent = "Dừng nghe thử"; announce("Đang phát bản nghe thử nội dung.");
-    const finish = () => { if (activePreview?.token !== token) return; activePreview = null; button.textContent = "Nghe thử nội dung"; updateTextState(); announce("Đã dừng bản nghe thử nội dung."); };
+    state.textPreviewUrl = URL.createObjectURL(blob); const audio = new Audio(state.textPreviewUrl); token = ++state.previewToken; activePreview = { audio, button, token }; button.textContent = "Dừng nghe thử"; announce("Đang phát bản nghe thử nội dung.");
+    const finish = () => releaseTextPreview(token);
     audio.addEventListener("ended", finish); audio.addEventListener("error", finish); await audio.play();
-  } catch (error) { if (error.name !== "AbortError") { showTextError(error.message, true); button.textContent = "Thử lại nghe thử"; toast(error.message, "error"); } }
+  } catch (error) { releaseTextPreview(token); if (error.name !== "AbortError") { showTextError(error.message, true); button.textContent = "Thử lại nghe thử"; toast(error.message, "error"); } }
   finally { if (state.textPreviewController === controller) state.textPreviewController = null; updateTextState(); }
 }
 async function submitTextJob(event) {
