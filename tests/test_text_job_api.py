@@ -119,6 +119,10 @@ def test_text_job_accepts_exactly_50000_unicode_characters(
     assert captured["job_type"] == "text_to_voice"
     assert len((captured["workdir"] / "input.txt").read_text(encoding="utf-8")) == 50_000
 
+    runner = captured["runner"]
+    closure_values = [cell.cell_contents for cell in (runner.__closure__ or ())]
+    assert "ạ" * 50_000 not in closure_values
+
 
 def test_text_job_rejects_unknown_language_before_creating_workdir(client, jobs_dir):
     response = client.post(

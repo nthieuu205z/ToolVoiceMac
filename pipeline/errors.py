@@ -34,7 +34,7 @@ class NoSpeechDetectedError(PipelineError):
 class JobCancelledError(PipelineError):
     """Người dùng bấm hủy. Không phải lỗi — pipeline dừng ở mốc an toàn gần nhất."""
 
-    user_message = "Đã hủy xử lý video."
+    user_message = "Đã hủy công việc."
 
 
 class GeminiAPIError(PipelineError):

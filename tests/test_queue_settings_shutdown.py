@@ -276,6 +276,7 @@ def test_mixed_queue_cancels_a_queued_text_job_before_backend_creation(tmp_path)
 
     cancelled = manager.cancel(text.id)
     assert cancelled.status == "cancelled"
+    assert cancelled.message == "Đã hủy công việc."
 
     release_video.set()
     manager._futures[video.id].result(timeout=2)

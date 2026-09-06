@@ -159,9 +159,10 @@ def create_text_job(request: TextJobRequest) -> dict:
         raise HTTPException(500, "Không thể lưu nội dung công việc.") from exc
 
     def runner(backend, progress, should_cancel) -> JobRunResult:
+        private_text = input_path.read_text(encoding="utf-8")
         result = run_text_to_voice(
             backend,
-            text,
+            private_text,
             workdir,
             options,
             progress=progress,
