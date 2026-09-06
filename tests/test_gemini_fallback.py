@@ -188,6 +188,17 @@ def test_silent_rejection_of_language_code_triggers_a_retry_without_it(runner):
     assert runner._tts_language_code_rejected is True
 
 
+def test_silent_rejection_of_english_language_code_retries_without_it(runner):
+    models = _LanguageCodeTrap()
+    runner._client = _Client(models)
+
+    audio = runner.synthesize("hello", "Kore", language="en-US")
+
+    assert audio == b"\x01\x02"
+    assert models.sent == ["en-US", None]
+    assert runner._tts_language_code_rejected is True
+
+
 def test_explicit_english_is_resolved_for_each_speech_request(runner):
     sent = []
 

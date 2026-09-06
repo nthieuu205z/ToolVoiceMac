@@ -56,7 +56,13 @@ def test_metering_is_off_by_default():
 
 def test_runner_skips_translation_when_source_matches_target(stub_stages, monkeypatch):
     calls = []
+    seen = []
     monkeypatch.setattr(runner, "translate_segments", lambda *a, **k: calls.append(k))
+    monkeypatch.setattr(
+        runner,
+        "synthesize_segments",
+        lambda _backend, segments, *args, **kwargs: seen.extend(segments) or ([], []),
+    )
 
     run_pipeline(
         None,
@@ -67,6 +73,7 @@ def test_runner_skips_translation_when_source_matches_target(stub_stages, monkey
     )
 
     assert calls == []
+    assert [segment.target_text for segment in seen] == [segment.text for segment in seen]
 
 
 def test_runner_passes_target_language_to_synthesis(stub_stages, monkeypatch):

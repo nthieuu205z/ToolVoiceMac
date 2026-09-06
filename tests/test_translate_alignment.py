@@ -51,6 +51,9 @@ def test_text_vi_alias_tracks_target_text_during_migration():
     segment.text_vi = "second"
     assert segment.target_text == "second"
 
+    segment.target_text = "third"
+    assert segment.text_vi == "third"
+
 
 def test_gemini_translation_uses_target_language_and_english_speaking_rate():
     from pipeline.gemini import GeminiRunner, _TranslatedLine, _Translation
