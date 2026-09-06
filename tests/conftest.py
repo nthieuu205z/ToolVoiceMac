@@ -7,7 +7,11 @@ import struct
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
+from backend.config import settings
+from backend.job_manager import manager
+from backend.main import app
 from pipeline.models import TTS_SAMPLE_RATE
 
 
@@ -114,3 +118,20 @@ def _isolated_custom_voices(tmp_path_factory, monkeypatch):
     from pipeline import custom_voices
 
     monkeypatch.setattr(custom_voices, "_dir", tmp_path_factory.mktemp("voices"))
+
+
+@pytest.fixture
+def jobs_dir(tmp_path, monkeypatch):
+    """Keep API job fixtures out of the repository's persistent jobs directory."""
+    monkeypatch.setattr(type(settings), "jobs_dir", property(lambda self: tmp_path))
+    return tmp_path
+
+
+@pytest.fixture
+def client(jobs_dir):
+    """Shared API client with an isolated, empty job registry."""
+    manager._jobs.clear()
+    manager._futures.clear()
+    yield TestClient(app)
+    manager._jobs.clear()
+    manager._futures.clear()

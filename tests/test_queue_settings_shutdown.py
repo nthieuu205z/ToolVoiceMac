@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from backend.config import settings
+from backend.job_contracts import JobRunResult
 from backend.job_manager import Job, JobManager
 from backend.main import app
 
@@ -193,6 +196,91 @@ def test_job_manager_refuses_to_delete_active_job(tmp_path):
         assert "đang chạy" in str(exc)
     else:
         raise AssertionError("active job deletion should be rejected")
+
+
+def test_manager_removes_reserved_job_if_executor_submission_fails(tmp_path, monkeypatch):
+    manager = JobManager(max_workers=1)
+    workdir = tmp_path / "reserved"
+    workdir.mkdir()
+
+    class BrokenExecutor:
+        def submit(self, *args, **kwargs):
+            raise RuntimeError("executor unavailable")
+
+    monkeypatch.setattr(manager, "_ensure_executor", lambda: BrokenExecutor())
+
+    try:
+        manager.start(
+            job_id="reserved-job",
+            filename="Queued text",
+            input_label="Queued text",
+            job_type="text_to_voice",
+            target_language="en-US",
+            workdir=workdir,
+            voice_id="en-US-AvaMultilingualNeural",
+            backend_factory=lambda: object(),
+            runner=lambda *args: JobRunResult([]),
+        )
+    except RuntimeError as exc:
+        assert "executor unavailable" in str(exc)
+    else:
+        raise AssertionError("executor submission should fail")
+
+    assert manager.get("reserved-job") is None
+
+
+def test_mixed_queue_cancels_a_queued_text_job_before_backend_creation(tmp_path):
+    manager = JobManager(max_workers=1)
+    release_video = threading.Event()
+    video_started = threading.Event()
+    text_backend_calls = []
+    text_runner_calls = []
+
+    video_dir = tmp_path / "video"
+    text_dir = tmp_path / "text"
+    video_dir.mkdir()
+    text_dir.mkdir()
+
+    def video_runner(backend, progress, should_cancel):
+        video_started.set()
+        release_video.wait(2)
+        return JobRunResult([])
+
+    video = manager.start(
+        filename="clip.mp4",
+        input_label="clip.mp4",
+        job_type="video_dubbing",
+        target_language="vi-VN",
+        workdir=video_dir,
+        voice_id="vi-VN-HoaiMyNeural",
+        backend_factory=lambda: object(),
+        runner=video_runner,
+    )
+    assert video_started.wait(1)
+
+    text = manager.start(
+        filename="Queued text",
+        input_label="Queued text",
+        job_type="text_to_voice",
+        target_language="en-US",
+        workdir=text_dir,
+        voice_id="en-US-AvaMultilingualNeural",
+        backend_factory=lambda: text_backend_calls.append(True),
+        runner=lambda *args: text_runner_calls.append(True) or JobRunResult([]),
+    )
+    for _ in range(100):
+        if text.status == "queued":
+            break
+        time.sleep(0.01)
+    assert text.status == "queued"
+
+    cancelled = manager.cancel(text.id)
+    assert cancelled.status == "cancelled"
+
+    release_video.set()
+    manager._futures[video.id].result(timeout=2)
+    assert text_backend_calls == []
+    assert text_runner_calls == []
 
 
 def test_shutdown_process_tree_only_contains_descendants():

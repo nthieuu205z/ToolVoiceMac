@@ -35,7 +35,7 @@ SILENT_RATIO_ALERT = 0.2
 # Trạng thái còn "sống": chiếm slot chạy và không được dọn thư mục.
 ACTIVE_STATUSES = ("queued", "running", "cancelling")
 
-_INTERRUPTED_MESSAGE = "Máy chủ đã dừng khi video này đang xử lý. Hãy chạy lại video."
+_INTERRUPTED_MESSAGE = "Máy chủ đã dừng khi công việc này đang xử lý. Hãy chạy lại công việc."
 
 
 def _optional_float(value) -> float | None:
@@ -470,6 +470,7 @@ class JobManager:
     def start(
         self,
         *,
+        job_id: str | None = None,
         filename: str,
         workdir: Path,
         voice_id: str,
@@ -513,7 +514,7 @@ class JobManager:
             runner = legacy_video_runner
 
         job = Job(
-            id=uuid.uuid4().hex[:12],
+            id=job_id or uuid.uuid4().hex[:12],
             filename=filename,
             input_label=input_label or filename,
             job_type=job_type,
@@ -526,7 +527,12 @@ class JobManager:
             self._jobs[job.id] = job
         self._persist(job)
 
-        future = self._ensure_executor().submit(self._run, job, backend_factory, runner)
+        try:
+            future = self._ensure_executor().submit(self._run, job, backend_factory, runner)
+        except Exception:
+            with self._lock:
+                self._jobs.pop(job.id, None)
+            raise
         self._futures[job.id] = future
         return job
 

@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 
 from backend.config import settings
 from backend.job_manager import manager
-from backend.routes import jobs, languages, model, settings as settings_routes, voices
+from backend.routes import jobs, languages, model, settings as settings_routes, text_jobs, voices
 from backend.process_control import schedule_shutdown
 from pipeline import custom_voices
 from pipeline.ffmpeg_utils import set_binaries
@@ -50,6 +50,7 @@ app.include_router(voices.router)
 app.include_router(languages.router)
 app.include_router(model.router)
 app.include_router(jobs.router)
+app.include_router(text_jobs.router)
 app.include_router(settings_routes.router)
 
 
