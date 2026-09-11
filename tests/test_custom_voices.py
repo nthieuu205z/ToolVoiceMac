@@ -91,7 +91,7 @@ def test_omnivoice_is_the_only_clone_implementation():
 def client(monkeypatch):
     monkeypatch.setattr(settings, "tts_provider", "edge")
     # Không nạp engine thật trong test: chặn luồng tạo nghe thử và bước decode ffmpeg.
-    monkeypatch.setattr("backend.routes.voices._generate_preview", lambda vid: None)
+    monkeypatch.setattr("backend.routes.voices._generate_preview", lambda vid, languages=None: None)
     monkeypatch.setattr("backend.routes.voices.decode_to_pcm",
                         lambda raw, rate: b"\x00\x00" * (rate * 5))  # 5 giây im lặng
     yield TestClient(app)

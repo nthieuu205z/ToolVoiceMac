@@ -112,6 +112,10 @@ def synthesize_texts(
     groups = _batch_groups(texts, batch_size)
 
     if batch_size == 1 and not force_single_batch and workers > 1:
+        if should_cancel():
+            raise JobCancelledError()
+        if texts:
+            progress("synthesize", 0.0, f"Đang tạo giọng 0/{len(texts)}")
         with ThreadPoolExecutor(max_workers=max(1, int(workers))) as pool:
             futures = {
                 pool.submit(
@@ -144,6 +148,13 @@ def synthesize_texts(
             raise JobCancelledError()
 
         batch = [texts[index] for index in indexes]
+        progress(
+            "synthesize",
+            completed / max(1, len(texts)),
+            f"Đang tạo lô {batch_number}/{len(groups)} · {len(indexes)} đoạn"
+            if batch_size > 1 or force_single_batch
+            else f"Đang tạo giọng {completed + 1}/{len(texts)}",
+        )
         values: list[bytes | None] | None = None
         use_batch = len(indexes) > 1 or force_single_batch
         if use_batch:

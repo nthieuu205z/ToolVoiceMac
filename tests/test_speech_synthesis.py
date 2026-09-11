@@ -166,6 +166,8 @@ def test_single_synthesis_preserves_order_language_and_progress():
         ("two", "voice", "en-US"),
     ]
     assert [(stage, fraction) for stage, fraction, _ in progress] == [
+        ("synthesize", 0.0),
+        ("synthesize", 0.5),
         ("synthesize", 0.5),
         ("synthesize", 1.0),
     ]
@@ -195,3 +197,33 @@ def test_batch_sizes_are_balanced():
         assert sum(sizes) == count
         assert max(sizes) <= 32
         assert max(sizes) - min(sizes) <= 1
+
+
+@pytest.mark.parametrize('batch_size,workers', [(0, 1), (0, 2), (2, 1)])
+def test_progress_enters_synthesis_before_provider_starts(batch_size, workers):
+    """Slow inference must not leave the job displaying the prepare stage."""
+    events = [('prepare', 1.0)]
+    observed = []
+
+    class SlowProvider:
+        def synthesize(self, text, voice_id, *, language):
+            observed.append(events[-1])
+            return pcm(1)
+
+        def synthesize_batch(self, texts, voice_id, *, language):
+            observed.append(events[-1])
+            return [pcm(1) for _ in texts]
+
+    provider = SlowProvider()
+    provider.batch_size = batch_size
+    audio, warnings = synthesize_texts(
+        provider, ['one', 'two', 'three', 'four'], 'voice', language='en-US',
+        workers=workers,
+        progress=lambda stage, fraction, message: events.append((stage, fraction)),
+    )
+
+    assert observed[0] == ('synthesize', 0.0)
+    assert all(stage == 'synthesize' and fraction < 1 for stage, fraction in observed)
+    assert events[-1] == ('synthesize', 1.0)
+    assert audio == [pcm(1)] * 4
+    assert warnings == []

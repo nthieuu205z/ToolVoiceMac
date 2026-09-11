@@ -1,0 +1,41 @@
+'use strict';
+const assert = require('node:assert/strict');
+const vm = require('node:vm');
+const fs = require('node:fs');
+const source = fs.readFileSync('web/static/app.js', 'utf8');
+const render = source.slice(source.indexOf('function renderJobs()'), source.indexOf('async function loadGeminiSettings()'));
+const list = {children: [], append(card) {this.insertBefore(card, null);}, insertBefore(card, next) {this.children = this.children.filter(c => c !== card); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index, 0, card);}};
+const state = {jobs: [{job_id:'old', created_at:1}, {job_id:'middle', created_at:2}], selectedJobId:'old'};
+const context = vm.createContext({state, $: s => s === '#jobList' ? list : {}, $$: () => list.children,
+ document:{createElement:() => ({dataset:{}, remove() {list.children = list.children.filter(c => c !== this);}})},
+ bindJobCard(card,job) {card.dataset.jobId=job.job_id;}, updateJobCard(){}, syncJobListViewport(){}, updateMetrics(){}});
+vm.runInContext(render,context);
+context.renderJobs();
+const old = list.children.find(c => c.dataset.jobId === 'old');
+state.jobs.unshift({job_id:'new',created_at:3});
+context.renderJobs();
+assert.deepEqual(list.children.map(c=>c.dataset.jobId),['new','middle','old']);
+assert.equal(list.children[2],old,'reuse existing DOM cards');
+assert.equal(state.selectedJobId,'old','do not change selection on new jobs');
+state.jobs=[state.jobs[2],state.jobs[0]];
+context.renderJobs();
+assert.deepEqual(list.children.map(c=>c.dataset.jobId),['new','middle']);
+context.renderJobs();
+assert.deepEqual(list.children.map(c=>c.dataset.jobId),['new','middle']);
+console.log('Job order, insertion, removal, and selected card: passed');
+
+const viewport = source.slice(source.indexOf('function syncJobListViewport()'), source.indexOf('function renderJobs()'));
+const dashboard = {hidden:false};
+const measuredList = {style:{},getBoundingClientRect:()=>({width:dashboard.hidden ? 0 : 400})};
+const cards = [100,110,120,130].map(height=>({getBoundingClientRect:()=>({height:dashboard.hidden ? 0 : height})}));
+const layoutContext = vm.createContext({$:s=>s === '#jobList' ? measuredList : dashboard,$$:()=>cards,getComputedStyle:()=>({rowGap:'10px'})});
+vm.runInContext(viewport,layoutContext);
+layoutContext.syncJobListViewport();
+assert.equal(measuredList.style.maxHeight,'350px');
+dashboard.hidden=true;
+layoutContext.syncJobListViewport();
+assert.equal(measuredList.style.maxHeight,'350px','background updates must preserve height while dashboard is hidden');
+dashboard.hidden=false;
+cards[0].getBoundingClientRect=()=>({height:150});
+layoutContext.syncJobListViewport();
+assert.equal(measuredList.style.maxHeight,'400px','visible dashboard uses fresh card heights');

@@ -38,3 +38,16 @@ voice-lab-*.png
 
 # Isolated Git worktrees used for feature development.
 .worktrees/
+
+# Local development tools and generated artifacts.
+.hermes/
+.idea/
+.superpowers/
+.claude/
+.mcp.json
+build/
+dist/
+qa-*.png
+
+# All generated voice previews, including per-voice folders.
+web/static/previews/

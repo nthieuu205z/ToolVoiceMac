@@ -37,8 +37,8 @@ def test_voice_list_exposes_language_preview_maps_and_compatibility_url(
         if item["id"] == "en-US-AvaMultilingualNeural"
     )
 
-    assert voice["preview_url"].endswith(
-        "/api/voices/en-US-AvaMultilingualNeural/preview?language=en-US"
+    assert voice["preview_url"].startswith(
+        "/api/voices/en-US-AvaMultilingualNeural/preview?language=en-US&v="
     )
     assert voice["preview_urls"]["en-US"] == voice["preview_url"]
     assert voice["preview_status"]["en-US"] == "ready"
@@ -54,6 +54,35 @@ def test_voice_routes_reject_unknown_language_as_bad_request(client):
 
     assert listed.status_code == 400
     assert preview.status_code == 400
+
+
+def test_replacing_preview_changes_catalog_url_and_serves_new_audio(client, tmp_path, monkeypatch):
+    store = _configure_store(tmp_path, monkeypatch)
+    voice_id = "en-US-AvaMultilingualNeural"
+    path = store.path(voice_id, "en-US")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"RIFFold")
+
+    def catalog_url():
+        return next(v for v in client.get("/api/voices?language=en-US").json()
+                    if v["id"] == voice_id)["preview_url"]
+
+    old_url = catalog_url()
+    assert catalog_url() == old_url
+    assert client.get(old_url).content == b"RIFFold"
+    path.write_bytes(b"RIFFreplacement")
+    new_url = catalog_url()
+    assert new_url != old_url
+    assert client.get(new_url).content == b"RIFFreplacement"
+
+
+def test_preview_requires_cache_revalidation(client, tmp_path, monkeypatch):
+    store = _configure_store(tmp_path, monkeypatch)
+    path = store.path("en-US-AvaMultilingualNeural", "en-US")
+    path.parent.mkdir(parents=True)
+    path.write_bytes(b"RIFFaudio")
+    response = client.get("/api/voices/en-US-AvaMultilingualNeural/preview?language=en-US")
+    assert response.headers.get("cache-control") == "no-cache"
 
 
 def test_preview_endpoint_defaults_to_vietnamese_and_accepts_explicit_language(
@@ -151,23 +180,43 @@ def test_busy_preview_returns_retryable_409(client, monkeypatch):
     assert "thử lại" in response.json()["detail"].lower()
 
 
-def test_text_preview_timeout_returns_504(client, monkeypatch):
-    class TimedOutFuture:
-        def result(self, timeout):
-            raise TimeoutError
+def test_timed_out_preview_keeps_provider_busy_until_synthesis_finishes(client, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from pipeline.speech_runtime import SpeechActivity
 
-    monkeypatch.setattr(
-        voices._preview_executor,
-        "submit",
-        lambda *args, **kwargs: TimedOutFuture(),
-    )
+    entered, release = Event(), Event()
+    activity = SpeechActivity()
+    monkeypatch.setattr(voices, "speech_activity", activity)
+    monkeypatch.setattr(voices, "_PREVIEW_TIMEOUT_SECONDS", 0.05)
 
-    response = client.post(
-        "/api/voices/en-US-AvaMultilingualNeural/preview-text",
-        json={"text": "Hello", "language": "en-US"},
-    )
+    def slow_synthesis(*args):
+        entered.set()
+        assert release.wait(3)
+        return _pcm()
 
-    assert response.status_code == 504
+    monkeypatch.setattr(voices, "_synthesize_preview_text", slow_synthesis)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        monkeypatch.setattr(voices, "_preview_executor", executor)
+        try:
+            response = client.post(
+                "/api/voices/en-US-AvaMultilingualNeural/preview-text",
+                json={"text": "Hello", "language": "en-US"},
+            )
+            assert response.status_code == 504
+            assert entered.is_set()
+            second = client.post(
+                "/api/voices/en-US-AvaMultilingualNeural/preview-text",
+                json={"text": "Hello", "language": "en-US"},
+            )
+            assert second.status_code == 409
+            with pytest.raises(PreviewBusyError):
+                with activity.preview("edge"):
+                    pass
+        finally:
+            release.set()
+    with activity.preview("edge"):
+        pass
 
 
 def test_preview_regeneration_transitions_to_pending_and_rejects_duplicate(
@@ -197,7 +246,7 @@ def test_preview_regeneration_transitions_to_pending_and_rejects_duplicate(
     assert len(dispatched) == 1
 
 
-def test_custom_voice_creation_dispatches_both_language_previews(
+def test_custom_voice_creation_dispatches_default_vietnamese_preview(
     client, tmp_path, monkeypatch
 ):
     store = _configure_store(tmp_path / "previews", monkeypatch)
@@ -226,5 +275,23 @@ def test_custom_voice_creation_dispatches_both_language_previews(
     assert response.status_code == 200
     voice_id = response.json()["id"]
     assert store.status(voice_id, "vi-VN") == "pending"
-    assert store.status(voice_id, "en-US") == "pending"
+    assert store.status(voice_id, "en-US") == "error"
     assert len(calls) == 1
+
+
+def test_failed_text_preview_releases_provider_for_retry(client, monkeypatch):
+    from pipeline.speech_runtime import SpeechActivity
+    activity = SpeechActivity()
+    monkeypatch.setattr(voices, "speech_activity", activity)
+
+    def fail(*args):
+        raise RuntimeError("synthesis failed")
+
+    monkeypatch.setattr(voices, "_synthesize_preview_text", fail)
+    with pytest.raises(RuntimeError, match="synthesis failed"):
+        client.post(
+            "/api/voices/en-US-AvaMultilingualNeural/preview-text",
+            json={"text": "Hello", "language": "en-US"},
+        )
+    with activity.preview("edge"):
+        pass

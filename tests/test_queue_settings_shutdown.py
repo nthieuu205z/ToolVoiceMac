@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import os
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.config import settings
@@ -14,6 +19,21 @@ from backend.job_manager import Job, JobManager
 from backend.main import app
 
 ROOT = Path("web/static")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_lifespan_models(monkeypatch):
+    """Settings/shutdown API tests exercise startup without loading speech models.
+
+    TestClient's context manager runs the real lifespan. Model configuration and
+    prewarming belong to the dedicated runtime/lifespan tests, whose singleton
+    state must not leak into these unrelated API requests.
+    """
+    from pipeline import omnivoice_speech, whisper_stt
+
+    monkeypatch.setattr(omnivoice_speech, "configure_optimization", lambda *args, **kwargs: None)
+    monkeypatch.setattr(omnivoice_speech, "prewarm", lambda: None)
+    monkeypatch.setattr(whisper_stt, "prewarm", lambda *args, **kwargs: None)
 
 
 def test_video_queue_is_bounded_and_scrolls_inside_the_panel():
@@ -298,11 +318,30 @@ def test_shutdown_process_tree_only_contains_descendants():
     assert _descendants(100, table) == {101, 102, 104}
 
 
-def test_launcher_replaces_the_shell_with_the_server_process():
-    launcher = Path("ChayTool.command").read_text(encoding="utf-8")
-
-    assert "exec .venv/bin/python -m uvicorn backend.main:app --port 8000" in launcher
-    assert "python -m uvicorn backend.main:app --port 8000\n\n echo" not in launcher
+@pytest.mark.parametrize("exit_code", [0, 23])
+def test_launcher_exec_preserves_pid_arguments_and_exit_status(tmp_path, exit_code):
+    launcher = Path(__file__).resolve().parents[1] / "ChayTool.command"
+    binaries = tmp_path / "bin"
+    binaries.mkdir()
+    stub = binaries / "toolvoice"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, sys\n"
+        "print(json.dumps({'pid': os.getpid(), 'args': sys.argv[1:], 'cwd': os.getcwd()}))\n"
+        f"raise SystemExit({exit_code})\n",
+        encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    args = ["--no-browser", "--port", "8123", "--data-dir", str(tmp_path / "data with spaces")]
+    environment = dict(os.environ, PATH=f"{binaries}:/usr/bin:/bin")
+    with subprocess.Popen(
+        ["/bin/bash", str(launcher), *args], cwd=tmp_path, env=environment,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ) as process:
+        output, errors = process.communicate(timeout=10)
+        assert process.returncode == exit_code, errors
+        result = json.loads(output)
+        assert result == {"pid": process.pid, "args": args, "cwd": str(tmp_path.resolve())}
 
 
 def test_shutdown_route_is_registered(monkeypatch):

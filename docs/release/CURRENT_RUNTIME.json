@@ -1,0 +1,67 @@
+{
+  "status": "verified-installed-macos-runtime",
+  "date": "2026-09-12",
+  "platform": "macOS Apple Silicon",
+  "python": "3.12.14",
+  "architecture": "arm64",
+  "settings": {
+    "stt_provider": "whisper",
+    "tts_provider": "edge",
+    "clone_tts_provider": "omnivoice",
+    "whisper_model": "small",
+    "whisper_compute_type": "int8",
+    "whisper_cpu_batch_size": 8,
+    "omnivoice_num_step": 32,
+    "omnivoice_batch_size": 0,
+    "omnivoice_optimization": "split-cfg-rms-gqa-rope",
+    "omnivoice_codec_device": "mps",
+    "max_concurrent_jobs": 2
+  },
+  "runtime": {
+    "requested_optimization": "split-cfg-rms-gqa-rope",
+    "loaded_optimization": "split-cfg-rms-gqa-rope",
+    "state": "ready",
+    "device": "mps",
+    "requested_codec_device": "mps",
+    "codec_device": "mps:0",
+    "batch_ceiling": 2,
+    "experimental": true,
+    "error": null
+  },
+  "packages": {
+    "torch": "2.13.0",
+    "torchaudio": "2.11.0",
+    "transformers": "5.16.1",
+    "omnivoice": "0.2.1",
+    "accelerate": "1.14.0",
+    "soundfile": "0.14.0",
+    "numpy": "2.5.2",
+    "fastapi": "0.141.1",
+    "uvicorn": "0.52.4",
+    "pydantic": "2.13.4",
+    "pydantic-settings": "2.15.0",
+    "faster-whisper": "1.2.1",
+    "ctranslate2": "4.8.1",
+    "edge-tts": "7.2.8",
+    "google-genai": "2.20.0"
+  },
+  "model": {
+    "repo": "k2-fsa/OmniVoice",
+    "cached_revision": "c5fdb5ccb189668d56333f77ba2629f4cd7535f4"
+  },
+  "quality_constraints": {
+    "steps": 32,
+    "guidance_scale": 2.0,
+    "speed": 1.0,
+    "chunking": "preserve current sentence splitting and pauses",
+    "experimental_mlp_and_qk_fusion": false
+  },
+  "verification": {
+    "isolated_install": true,
+    "model_revision_pinned": true,
+    "gpu": "MPS model and codec ready",
+    "regression_tests": 987,
+    "provider_tests_skipped": 5,
+    "audio_parity": "Installed package matches pre-release PCM for English batch of 2 and Vietnamese full WAV/MP3 pipeline; fixed seeds, 32 steps. Not a guarantee for every input."
+  }
+}

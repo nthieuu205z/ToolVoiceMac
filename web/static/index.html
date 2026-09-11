@@ -9,7 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Be+Vietnam+Pro:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=20260906-44">
+  <link rel="stylesheet" href="style.css?v=20260911-voice-projects3">
 </head>
 <body>
   <a class="skip-link" href="#main-content">Bỏ qua điều hướng</a>
@@ -25,6 +25,8 @@
         <nav class="nav-list">
           <a class="nav-item active" href="#overview"><span class="icon icon-grid" aria-hidden="true"></span><span>Tổng quan</span><b id="navActiveCount" aria-label="Số job đang chạy">0</b></a>
           <a class="nav-item" href="#jobs"><span class="icon icon-queue" aria-hidden="true"></span><span>Hàng đợi job</span><b id="navJobCount" aria-label="Tổng số job">0</b></a>
+          <a class="nav-item" href="#voiceSettings"><span class="icon icon-sound" aria-hidden="true"></span><span>Voice Lab</span></a>
+          <a class="nav-item" href="#settings"><span class="icon icon-chip" aria-hidden="true"></span><span>Runtime Settings</span></a>
           <a class="nav-item" href="#architecture"><span class="icon icon-nodes" aria-hidden="true"></span><span>Kiến trúc lõi</span></a>
         </nav>
       </div>
@@ -45,8 +47,8 @@
     <main class="main-content" id="main-content" tabindex="-1">
       <header class="topbar">
         <div>
-          <p class="breadcrumb"><span>WORKSPACE</span><i>/</i> TỔNG QUAN</p>
-          <h1>Phòng điều khiển</h1>
+          <p class="breadcrumb"><span>WORKSPACE</span><i>/</i> <span id="workspaceCrumb">TỔNG QUAN</span></p>
+          <h1 id="workspaceTitle">Phòng điều khiển</h1>
         </div>
         <div class="top-actions">
           <div class="connection-pill" id="connectionPill"><span class="status-dot neutral"></span><span id="connectionText">Đang kết nối</span></div>
@@ -54,6 +56,7 @@
         </div>
       </header>
 
+      <div id="dashboardView">
       <section class="overview-grid" id="overview" aria-labelledby="overview-title">
         <div class="section-title-row"><div><p class="eyebrow">LIVE OPERATIONS</p><h2 id="overview-title">Trạng thái hệ thống</h2></div><span class="updated-label" id="lastUpdated">Chưa có dữ liệu</span></div>
         <div class="metric-grid">
@@ -84,6 +87,12 @@
         </aside>
       </section>
 
+      <section class="panel speech-project-panel" id="speechProject" hidden aria-labelledby="projectTitle">
+        <div class="panel-heading compact"><div><p class="eyebrow">SPEECH PROJECT</p><h2 id="projectTitle">Các phần trong bài đọc</h2></div><span id="projectSummary" role="status"></span></div>
+        <p class="form-hint">Xử lý lần lượt từ trên xuống. File tải về được đánh số 001, 002… theo đúng thứ tự bài đọc.</p>
+        <ol id="projectParts" class="project-parts" tabindex="0" aria-label="Các phần của project"></ol>
+      </section>
+
       <section class="panel pipeline-panel" id="architecture" aria-labelledby="pipeline-title">
         <div class="panel-heading"><div><p class="eyebrow">EXECUTION GRAPH</p><h2 id="pipeline-title">Pipeline lõi</h2></div><div class="graph-legend"><span><i class="legend-dot completed"></i>Đã xong</span><span><i class="legend-dot active"></i>Đang chạy</span><span><i class="legend-dot pending"></i>Chờ</span></div></div>
         <div class="graph-scroll-shell">
@@ -96,8 +105,8 @@
       <section class="panel upload-panel primary-upload-panel" id="uploadPanel" aria-labelledby="upload-title">
         <div class="panel-heading compact"><div><p class="eyebrow">NEW JOB</p><h2 id="upload-title">Tạo công việc mới</h2></div><span class="upload-step">VIDEO / TEXT</span></div>
         <div class="job-mode-tabs" id="jobModeTabs" role="tablist" aria-label="Loại công việc"><button id="videoJobTab" role="tab" type="button" data-mode="video" aria-selected="true" aria-controls="videoJobPanel" tabindex="0">Video Dubbing</button><button id="textJobTab" role="tab" type="button" data-mode="text" aria-selected="false" aria-controls="textJobPanel" tabindex="-1">Text → Voice</button></div>
-        <div id="videoJobPanel" role="tabpanel" aria-labelledby="videoJobTab"><form id="uploadForm" novalidate><div class="upload-error-summary" id="uploadError" role="alert" tabindex="-1" hidden><strong>Chưa thể bắt đầu</strong><span id="uploadErrorText"></span></div><label class="dropzone" id="dropzone" for="videoInput" tabindex="0"><input id="videoInput" type="file" accept="video/*,.mp4,.mkv,.mov,.avi,.webm" aria-describedby="dropHint uploadErrorText"><span class="drop-icon icon-upload" aria-hidden="true"></span><strong id="dropTitle">Kéo thả video vào đây</strong><small id="dropHint">hoặc bấm để chọn · MP4, MKV, MOV, AVI, WebM · tối đa 8 GB</small><span class="selected-upload" id="selectedUpload" hidden></span></label><div class="composer-grid"><label class="field-wrap"><span class="field-label">Ngôn ngữ đầu ra</span><select id="videoLanguage"></select></label><label class="field-wrap"><span class="field-label">Giọng đọc</span><select id="videoVoiceSelect" required aria-describedby="uploadHint uploadErrorText"><option value="">Đang tải danh sách…</option></select></label></div><div class="upload-footer"><span id="uploadHint">Chọn video, ngôn ngữ và giọng đọc để bắt đầu.</span><button class="button primary" type="submit" id="startButton" disabled>Bắt đầu xử lý <span class="icon icon-arrow" aria-hidden="true"></span></button></div><div class="upload-progress" id="uploadProgress" hidden><div><span id="uploadProgressLabel">Đang tải video lên</span><strong id="uploadPercent">0%</strong></div><div class="progress-track"><span id="uploadBar"></span></div><button class="upload-cancel" id="cancelUploadButton" type="button">Hủy tải lên</button></div></form></div>
-        <div id="textJobPanel" role="tabpanel" aria-labelledby="textJobTab" hidden><form id="textJobForm" novalidate><label class="field-wrap"><span class="field-label">Nội dung cần đọc</span><textarea id="textInput" maxlength="50000" rows="8" placeholder="Nhập nội dung tiếng Việt hoặc tiếng Anh"></textarea></label><div class="text-meta"><span id="textCharacterCount">0 / 50.000 ký tự</span><span id="textDurationEstimate">Ước tính 0 giây</span></div><div class="composer-grid"><label class="field-wrap"><span class="field-label">Ngôn ngữ</span><select id="textLanguage"></select></label><label class="field-wrap"><span class="field-label">Giọng đọc</span><select id="textVoiceSelect"></select></label></div><div class="preview-actions"><button class="button small" id="textFixedPreviewButton" type="button">Nghe giọng mẫu</button><button class="button small" id="textPreviewButton" type="button">Nghe thử nội dung</button></div><div class="upload-error-summary" id="textJobError" role="alert" tabindex="-1" hidden><strong>Chưa thể bắt đầu</strong><span id="textJobErrorText"></span></div><div class="upload-footer"><span id="textJobHint">Tối đa 50.000 ký tự · xuất WAV và MP3.</span><button class="button primary" id="textStartButton" type="submit">Tạo giọng đọc</button></div></form></div>
+        <div id="videoJobPanel" role="tabpanel" aria-labelledby="videoJobTab"><form id="uploadForm" novalidate><label class="field-wrap job-name-field"><span class="field-label">Tên job <small>· không bắt buộc</small></span><input id="videoJobName" name="name" maxlength="80" placeholder="Ví dụ: Video giới thiệu tập 01"></label><div class="upload-error-summary" id="uploadError" role="alert" tabindex="-1" hidden><strong>Chưa thể bắt đầu</strong><span id="uploadErrorText"></span></div><label class="dropzone" id="dropzone" for="videoInput" tabindex="0"><input id="videoInput" type="file" accept="video/*,.mp4,.mkv,.mov,.avi,.webm" aria-describedby="dropHint uploadErrorText"><span class="drop-icon icon-upload" aria-hidden="true"></span><strong id="dropTitle">Kéo thả video vào đây</strong><small id="dropHint">hoặc bấm để chọn · MP4, MKV, MOV, AVI, WebM · tối đa 8 GB</small><span class="selected-upload" id="selectedUpload" hidden></span></label><div class="composer-grid"><label class="field-wrap"><span class="field-label">Ngôn ngữ đầu ra</span><select id="videoLanguage"></select></label><label class="field-wrap"><span class="field-label">Giọng đọc</span><select id="videoVoiceSelect" required aria-describedby="uploadHint uploadErrorText"><option value="">Đang tải danh sách…</option></select></label></div><div class="upload-footer"><span id="uploadHint">Chọn video, ngôn ngữ và giọng đọc để bắt đầu.</span><button class="button primary" type="submit" id="startButton" disabled>Bắt đầu xử lý <span class="icon icon-arrow" aria-hidden="true"></span></button></div><div class="upload-progress" id="uploadProgress" hidden><div><span id="uploadProgressLabel">Đang tải video lên</span><strong id="uploadPercent">0%</strong></div><div class="progress-track"><span id="uploadBar"></span></div><button class="upload-cancel" id="cancelUploadButton" type="button">Hủy tải lên</button></div></form></div>
+        <div id="textJobPanel" role="tabpanel" aria-labelledby="textJobTab" hidden><form id="textJobForm" novalidate><label class="field-wrap job-name-field"><span class="field-label">Tên job / project <small>· không bắt buộc</small></span><input id="textJobName" maxlength="80" placeholder="Ví dụ: Sleep History — Chương 01"></label><label class="field-wrap"><span class="field-label">Nội dung cần đọc</span><textarea id="textInput" maxlength="200000" rows="8" placeholder="Nhập nội dung tiếng Việt hoặc tiếng Anh"></textarea></label><div class="text-meta"><span id="textCharacterCount">0 / 200.000 ký tự</span><span id="textDurationEstimate">Ước tính 0 giây</span></div><label class="project-option"><input id="textProjectMode" type="checkbox"><span><strong>Tạo speech project</strong><small>Chia bài thành các phần có thứ tự, tải tất cả WAV + MP3 trong một ZIP. Tự bật khi bài vượt 50.000 ký tự.</small></span></label><p id="textProjectHint" class="form-hint" role="status"></p><div class="composer-grid"><label class="field-wrap"><span class="field-label">Ngôn ngữ</span><select id="textLanguage"></select></label><label class="field-wrap"><span class="field-label">Giọng đọc</span><select id="textVoiceSelect"></select></label></div><details class="voice-disclosure omni-settings" id="omnivoiceSettings" hidden><summary class="voice-disclosure-summary"><span><strong>OmniVoice · Cấu hình nâng cao</strong><small>Chỉ áp dụng cho job Text → Voice này</small></span><span class="disclosure-chevron" aria-hidden="true"></span></summary><div class="voice-disclosure-body"><p class="form-hint">Video và các nút nghe thử vẫn dùng mặc định, không dùng cấu hình bên dưới.</p><div class="omni-fields"></div><button class="button small" type="button">Khôi phục mặc định</button></div></details><p class="form-hint" id="omniAvailability" role="status"></p><div class="preview-actions"><button class="button small" id="textFixedPreviewButton" type="button">Nghe giọng mẫu</button><button class="button small" id="textPreviewButton" type="button">Nghe thử nội dung</button></div><div class="upload-error-summary" id="textJobError" role="alert" tabindex="-1" hidden><strong>Chưa thể bắt đầu</strong><span id="textJobErrorText"></span></div><div class="upload-footer"><span id="textJobHint">Tối đa 200.000 ký tự · xuất WAV và MP3.</span><button class="button primary" id="textStartButton" type="submit">Tạo giọng đọc</button></div></form></div>
       </section>
 
       <section class="panel voice-panel" id="voiceSettings" aria-labelledby="voice-title">
@@ -105,13 +114,13 @@
         <div class="voice-disclosure-stack">
           <details class="voice-disclosure" id="voiceListDisclosure" open>
             <summary class="voice-disclosure-summary" id="voiceListToggle"><span><strong>Danh sách giọng</strong><small>Quản lý, nghe thử và chọn giọng nhân bản</small></span><span class="voice-summary-meta"><span class="voice-count" id="voiceCount">0 giọng</span><span class="disclosure-chevron" aria-hidden="true"></span></span></summary>
-            <div class="voice-disclosure-body"><div class="voice-toolbar"><div><p>Lọc các giọng hiện có theo ngôn ngữ nghe thử.</p></div><div class="voice-toolbar-actions"><label class="field-wrap compact-field"><span class="field-label">Ngôn ngữ nghe thử</span><select id="voiceLabLanguage"></select></label></div></div><div class="voice-list" id="voiceList"><div class="event-empty">Đang tải danh sách giọng…</div></div></div>
+            <div class="voice-disclosure-body"><div class="voice-toolbar"><div><p>Thư viện giọng theo ngôn ngữ đầu ra.</p></div><div class="voice-toolbar-actions"><label class="field-wrap compact-field"><span class="field-label">Ngôn ngữ đầu ra</span><select id="voiceLabLanguage"></select></label></div></div><div class="voice-list" id="voiceList" role="region" aria-label="Danh sách giọng, cuộn để xem thêm" tabindex="0"><div class="event-empty">Đang tải danh sách giọng…</div></div></div>
           </details>
           <details class="voice-disclosure" id="voiceCreateDisclosure">
             <summary class="voice-disclosure-summary" id="toggleVoiceForm"><span><strong>Tạo giọng mới</strong><small>Thêm giọng nhân bản từ một đoạn audio mẫu</small></span><span class="disclosure-chevron" aria-hidden="true"></span></summary>
             <div class="voice-disclosure-body"><form class="voice-form" id="voiceForm">
-              <div class="voice-form-grid"><label class="field-wrap"><span class="field-label">Tên giọng</span><input id="cloneName" name="name" type="text" maxlength="40" placeholder="Ví dụ: Giọng của tôi" required></label><label class="field-wrap"><span class="field-label">Audio mẫu</span><input id="cloneAudio" name="audio" type="file" accept="audio/*" required></label><button class="button primary" id="createVoiceButton" type="submit">Tạo giọng</button></div>
-              <p class="form-hint" id="voiceFormHint">Nên dùng audio 3–8 giây, một người nói, ít tạp âm.</p>
+              <div class="voice-form-grid"><label class="field-wrap"><span class="field-label">Tên giọng</span><input id="cloneName" name="name" type="text" maxlength="40" placeholder="Ví dụ: Giọng của tôi" required></label><label class="field-wrap"><span class="field-label">Ngôn ngữ đầu ra</span><select id="cloneLanguage" name="language"><option value="vi-VN">Tiếng Việt</option><option value="en-US">English (US)</option></select></label><label class="field-wrap"><span class="field-label">Audio mẫu</span><input id="cloneAudio" name="audio" type="file" accept="audio/*" required></label><label class="field-wrap clone-tags-field"><span class="field-label">Nhãn mô tả · phân cách bằng dấu phẩy</span><input id="cloneTags" maxlength="210" placeholder="Nam, Trầm, Kể chuyện, Thư giãn" aria-describedby="cloneTagsHint"><small id="cloneTagsHint">Tối đa 8 nhãn. Nhãn giúp phân loại, không thay đổi giọng đọc.</small></label><button class="button primary" id="createVoiceButton" type="submit">Tạo giọng</button></div>
+              <p class="form-hint" id="voiceFormHint">Dùng 3–8 giây lời nói rõ, một người, không nhạc nền. Chỉ tạo demo cho ngôn ngữ đã chọn.</p>
             </form></div>
           </details>
         </div>
@@ -122,13 +131,27 @@
         <div class="panel session-panel"><div class="panel-heading compact"><div><p class="eyebrow">SESSION</p><h2>Phiên làm việc</h2></div></div><p class="session-copy">Mọi job được xử lý qua hàng đợi dùng chung. Sự kiện của job đang chọn được cập nhật liên tục qua SSE.</p></div>
       </section>
 
-      <section class="panel settings-panel" id="settings" aria-labelledby="settings-title"><div class="panel-heading compact"><div><p class="eyebrow">RUNTIME SETTINGS</p><h2 id="settings-title">Cấu hình Gemini</h2></div><span class="settings-status" id="geminiSettingsStatus">Chưa cấu hình</span></div><form id="geminiSettingsForm" class="settings-form" novalidate><label class="field-wrap"><span class="field-label">Gemini API key</span><input id="geminiApiKey" name="api_key" type="password" autocomplete="new-password" placeholder="Dán key Gemini tại đây" required></label><label class="field-wrap"><span class="field-label">Endpoint</span><select id="geminiBackend" name="backend"><option value="developer">Developer API / AI Studio</option><option value="vertex">Vertex AI Express Mode</option></select></label><button class="button primary" type="submit">Lưu cấu hình</button></form><p class="form-hint" id="geminiSettingsHint">Key được lưu vào .env local. Giao diện không hiển thị lại key sau khi lưu.</p></section>
+      </div>
+      <section hidden class="panel settings-panel" id="settings" aria-labelledby="settings-title"><div class="panel-heading compact"><div><p class="eyebrow">RUNTIME SETTINGS</p><h2 id="settings-title">Cấu hình Gemini</h2></div><span class="settings-status" id="geminiSettingsStatus">Chưa cấu hình</span></div><form id="geminiSettingsForm" class="settings-form" novalidate><label class="field-wrap"><span class="field-label">Gemini API key</span><input id="geminiApiKey" name="api_key" type="password" autocomplete="new-password" placeholder="Dán key Gemini tại đây" required></label><label class="field-wrap"><span class="field-label">Endpoint</span><select id="geminiBackend" name="backend"><option value="developer">Developer API / AI Studio</option><option value="vertex">Vertex AI Express Mode</option></select></label><button class="button primary" type="submit">Lưu cấu hình</button></form><p class="form-hint" id="geminiSettingsHint">Key được lưu vào .env local. Giao diện không hiển thị lại key sau khi lưu.</p></section>
 
       <footer class="footer"><span>SUB. OPS CONSOLE</span><span>Local-first video dubbing · OmniVoice / Whisper / Gemini</span><span class="mono">v2.0.0</span></footer>
     </main>
   </div>
   <div class="toast-stack" id="toastStack" aria-live="polite"></div>
   <div class="sr-status" id="srStatus" role="status" aria-live="polite" aria-atomic="true"></div>
-  <script src="app.js?v=20260906-44"></script>
+  <dialog id="voiceEditDialog" aria-labelledby="voiceEditTitle">
+    <form id="voiceEditForm" class="voice-edit-form">
+      <p class="eyebrow">VOICE LAB</p><h2 id="voiceEditTitle">Chỉnh sửa giọng</h2>
+      <label class="field-wrap"><span class="field-label">Tên giọng</span><input id="editVoiceName" maxlength="40" required></label>
+      <label class="field-wrap"><span class="field-label">Ngôn ngữ đầu ra</span><select id="editVoiceLanguage"><option value="">Giữ cả hai ngôn ngữ (giọng cũ)</option><option value="vi-VN">Tiếng Việt</option><option value="en-US">English (US)</option></select></label>
+      <label class="field-wrap"><span class="field-label">Nhãn mô tả · phân cách bằng dấu phẩy</span><input id="editVoiceTags" maxlength="210" placeholder="Nam, Trầm, Kể chuyện"></label>
+      <p class="form-hint">Đổi ngôn ngữ sẽ phân loại lại giọng. Bạn có thể tạo demo cho ngôn ngữ mới bằng nút nghe thử.</p>
+      <p id="voiceEditError" class="omni-error" role="alert"></p>
+      <div class="dialog-actions"><button id="voiceEditCancel" type="button" class="button">Hủy</button><button id="voiceEditSave" type="submit" class="button primary">Lưu thay đổi</button></div>
+    </form>
+  </dialog>
+  <script src="workspace-features.js?v=20260911-voice-projects3"></script>
+  <script src="omnivoice-settings.js?v=20260911-voice-projects3"></script>
+  <script src="app.js?v=20260911-voice-projects3"></script>
 </body>
 </html>

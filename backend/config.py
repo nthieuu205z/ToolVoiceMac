@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 from pathlib import Path
+from importlib.resources import files
+from toolvoice.paths import data_dir
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT = Path(__file__).resolve().parent.parent
+ROOT = data_dir()
 
 
 class Settings(BaseSettings):
@@ -54,6 +57,10 @@ class Settings(BaseSettings):
     # hạ 16–24 để nhanh hơn. batch_size 0 = tự suy từ VRAM, cạp ở knee khoảng 8.
     omnivoice_num_step: int = 32
     omnivoice_batch_size: int = 0
+    # Opt-in lúc khởi động; singleton không đổi mode khi đã nạp.
+    omnivoice_optimization: Literal["none", "split-cfg", "split-cfg-rms", "split-cfg-rms-gqa", "split-cfg-rms-gqa-rope"] = "split-cfg-rms-gqa-rope"
+    # Opt-in after codec compatibility checks on the installed MPS stack.
+    omnivoice_codec_device: Literal["cpu", "mps"] = "mps"
 
 
     # ffmpeg: để trống thì tìm trong PATH.
@@ -161,16 +168,16 @@ class Settings(BaseSettings):
     @property
     def jobs_dir(self) -> Path:
         path = ROOT / "jobs"
-        path.mkdir(exist_ok=True)
+        path.mkdir(parents=True, exist_ok=True)
         return path
 
     @property
     def static_dir(self) -> Path:
-        return ROOT / "web" / "static"
+        return Path(str(files("web").joinpath("static")))
 
     @property
     def previews_dir(self) -> Path:
-        return self.static_dir / "previews"
+        return ROOT / "previews"
 
     @property
     def custom_voices_dir(self) -> Path:

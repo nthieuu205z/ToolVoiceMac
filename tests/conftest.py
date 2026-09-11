@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+import atexit
 import math
 import struct
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+
+_test_data = tempfile.TemporaryDirectory(prefix="toolvoice-tests-")
+os.environ["TOOLVOICE_DATA_DIR"] = _test_data.name
+atexit.register(_test_data.cleanup)
 
 from backend.config import settings
 from backend.job_manager import manager

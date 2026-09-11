@@ -178,37 +178,30 @@ def test_language_is_reported(tmp_path):
     assert language == "ja"
 
 
-def test_whisper_stays_on_cpu_when_only_mps_is_available(monkeypatch):
+@pytest.mark.parametrize("accelerator", [None, "mps", "cuda"])
+def test_whisper_loads_on_cpu_with_int8_and_batch_eight(monkeypatch, accelerator):
     import sys
     from types import SimpleNamespace
 
-    from pipeline import whisper_stt
-
-    monkeypatch.setattr(whisper_stt, "_gpu_bi_loai", False)
-    monkeypatch.setitem(
-        sys.modules, "torch",
-        SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False)),
-    )
-
-    assert whisper_stt._thiet_bi() == ("cpu", "int8")
-
-
-def test_whisper_falls_back_to_cpu_when_cuda_probe_fails(monkeypatch):
     from pipeline import model_store, whisper_stt
 
-    monkeypatch.setattr(model_store, "accel_device", lambda: None)
-    monkeypatch.setattr(whisper_stt, "_gpu_bi_loai", False)
+    monkeypatch.setattr(model_store, "accel_device", lambda: accelerator)
+    monkeypatch.setattr(whisper_stt, "_models", {})
 
-    assert whisper_stt._thiet_bi() == ("cpu", "int8")
+    class LoadedWhisper:
+        def __init__(self, name, *, device, compute_type):
+            self.name = name
+            self.device = device
+            self.compute_type = compute_type
 
+    monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=LoadedWhisper))
+    model = whisper_stt._get_model("small", "int8")
+    transcriber = whisper_stt.WhisperTranscriber()
 
-def test_whisper_uses_cuda_only_after_shared_probe_succeeds(monkeypatch):
-    from pipeline import model_store, whisper_stt
-
-    monkeypatch.setattr(model_store, "accel_device", lambda: "cuda")
-    monkeypatch.setattr(whisper_stt, "_gpu_bi_loai", False)
-
-    assert whisper_stt._thiet_bi() == ("cuda", "float16")
+    assert (model.name, model.device, model.compute_type) == ("small", "cpu", "int8")
+    assert whisper_stt._get_model("small", "int8") is model
+    assert transcriber.stt_batch_size == 8
+    assert transcriber.stt_timed is True
 
 
 def test_regions_with_no_speech_are_dropped(tmp_path):

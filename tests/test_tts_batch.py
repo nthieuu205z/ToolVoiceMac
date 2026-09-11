@@ -68,9 +68,9 @@ def test_batch_progress_reports_each_completed_batch():
         progress=lambda stage, fraction, message: progress.append((fraction, message)),
     )
 
-    assert [round(fraction, 3) for fraction, _ in progress] == [0.0, 0.667, 1.0, 1.0]
+    assert [round(fraction, 3) for fraction, _ in progress] == [0.0, 0.0, 0.667, 0.667, 1.0, 1.0]
     assert "lô 1/2" in progress[1][1]
-    assert "lô 2/2" in progress[2][1]
+    assert "lô 2/2" in progress[3][1]
 
 
 def test_batch_provider_is_called_once_and_keeps_original_order():

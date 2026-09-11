@@ -12,7 +12,7 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.config import settings
-from backend.job_contracts import JobArtifact, JobRunResult
+from backend.job_contracts import JobArtifact, JobRunResult, normalize_job_name
 from backend.job_manager import Job, manager
 from pipeline.backends import CompositeBackend, build_backend
 from pipeline.errors import UnsupportedMediaError
@@ -21,6 +21,7 @@ from pipeline.models import PipelineResult
 from pipeline.probe import probe_video
 from pipeline.runner import PipelineOptions, run_pipeline
 from pipeline.voices import is_available, route_provider
+from pipeline.speech_project import read_project_manifest, safe_download_stem
 
 router = APIRouter()
 
@@ -37,10 +38,10 @@ def _make_backend(tts_provider: str) -> CompositeBackend:
 
 
 def _video_job_result(
-    result: PipelineResult, filename: str, language: str
+    result: PipelineResult, filename: str, language: str, name: str = ""
 ) -> JobRunResult:
     suffix = "vi" if language == "vi-VN" else "en"
-    stem = Path(filename).stem
+    stem = safe_download_stem(name or Path(filename).stem)
     return JobRunResult(
         artifacts=[
             JobArtifact(
@@ -69,7 +70,12 @@ async def create_job(
     video: UploadFile = File(...),
     voice_id: str = Form(...),
     target_language: str = Form("vi-VN"),
+    name: str | None = Form(None),
 ) -> dict:
+    try:
+        job_name = normalize_job_name(name)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
     # Bước dịch luôn cần Gemini, kể cả khi nhận diện và giọng đọc đã chạy miễn phí.
     if not settings.gemini_api_key:
         raise HTTPException(500, "Chưa cấu hình dịch vụ dịch thuật. Hãy điền khóa trong file .env.")
@@ -135,11 +141,12 @@ async def create_job(
             media,
             should_cancel,
         )
-        return _video_job_result(result, filename, language)
+        return _video_job_result(result, filename, language, job_name)
 
     job = manager.start(
         filename=filename,
         input_label=filename,
+        name=job_name,
         job_type="video_dubbing",
         target_language=language,
         workdir=workdir,
@@ -190,6 +197,23 @@ def job_telemetry(job_id: str) -> dict:
     payload = job.snapshot()
     payload["telemetry_only"] = True
     return payload
+
+
+@router.get("/api/jobs/{job_id}/project")
+def job_project(job_id: str) -> dict:
+    job = _require(job_id)
+    if job.job_type != "text_to_voice" or not job.is_project:
+        raise HTTPException(404, "Công việc này không phải dự án giọng đọc.")
+    try:
+        manifest = read_project_manifest(job.workdir)
+        if job.status in ("error", "cancelled"):
+            manifest.update(status=job.status, error=job.message)
+            for part in manifest["parts"]:
+                if part.get("status") == "running":
+                    part.update(status=job.status, error=job.message)
+        return manifest
+    except (OSError, ValueError, RuntimeError):
+        raise HTTPException(404, "Không tìm thấy thông tin dự án.") from None
 
 
 @router.post("/api/jobs/{job_id}/cancel")

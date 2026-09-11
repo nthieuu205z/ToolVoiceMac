@@ -23,18 +23,15 @@ class _ProbeValue:
 
 
 class _FakeTorch:
-    def __init__(self, *, cuda_available=False, cuda_fails=False,
+    def __init__(self, *, cuda_available=False,
                  mps_available=False, mps_fails=False):
         self.cuda = SimpleNamespace(is_available=lambda: cuda_available)
         self.backends = SimpleNamespace(
             mps=SimpleNamespace(is_available=lambda: mps_available),
         )
-        self._cuda_fails = cuda_fails
         self._mps_fails = mps_fails
 
     def zeros(self, *shape, device):
-        if device == "cuda" and self._cuda_fails:
-            raise RuntimeError("CUDA probe failed")
         if device == "mps" and self._mps_fails:
             raise RuntimeError("MPS probe failed")
         return _ProbeValue()
@@ -83,50 +80,49 @@ def test_accel_device_falls_back_when_torch_import_is_broken(monkeypatch):
     assert accel_device() is None
 
 
-def test_accel_device_selects_cuda_after_a_real_probe(monkeypatch):
+def test_accel_device_uses_cpu_when_only_non_mps_acceleration_is_available(monkeypatch):
     from pipeline.model_store import accel_device
 
     monkeypatch.setitem(sys.modules, "torch", _FakeTorch(cuda_available=True))
 
-    assert accel_device() == "cuda"
+    assert accel_device() is None
 
 
-def test_accel_device_tries_mps_when_cuda_probe_fails(monkeypatch):
+def test_accel_device_selects_mps_after_a_real_probe(monkeypatch):
     from pipeline.model_store import accel_device
 
     monkeypatch.setitem(
         sys.modules, "torch",
-        _FakeTorch(cuda_available=True, cuda_fails=True, mps_available=True),
+        _FakeTorch(mps_available=True),
     )
 
     assert accel_device() == "mps"
 
 
-def test_accel_device_returns_cpu_when_every_accelerator_probe_fails(monkeypatch):
+def test_accel_device_returns_cpu_when_mps_computation_fails(monkeypatch):
     from pipeline.model_store import accel_device
 
     monkeypatch.setitem(
         sys.modules, "torch",
-        _FakeTorch(cuda_available=True, cuda_fails=True,
-                   mps_available=True, mps_fails=True),
+        _FakeTorch(mps_available=True, mps_fails=True),
     )
 
     assert accel_device() is None
 
 
-def test_accel_device_ignores_a_broken_cuda_probe_and_uses_mps(monkeypatch):
+def test_accel_device_uses_cpu_when_mps_availability_check_fails(monkeypatch):
     from pipeline.model_store import accel_device
 
-    class BrokenCuda(_FakeTorch):
+    class BrokenMps(_FakeTorch):
         def __init__(self):
             super().__init__(mps_available=True)
-            self.cuda.is_available = lambda: (_ for _ in ()).throw(
-                RuntimeError("CUDA driver unavailable")
+            self.backends.mps.is_available = lambda: (_ for _ in ()).throw(
+                RuntimeError("Metal unavailable")
             )
 
-    monkeypatch.setitem(sys.modules, "torch", BrokenCuda())
+    monkeypatch.setitem(sys.modules, "torch", BrokenMps())
 
-    assert accel_device() == "mps"
+    assert accel_device() is None
 
 
 def test_accel_device_probe_is_serialized(monkeypatch):
@@ -154,7 +150,7 @@ def test_accel_device_probe_is_serialized(monkeypatch):
     assert ProbeTorch.maximum == 1
 
 
-def test_accel_device_does_not_probe_mps_when_cuda_succeeds(monkeypatch):
+def test_accel_device_prefers_mps_even_when_other_acceleration_is_available(monkeypatch):
     from pipeline import model_store
 
     class CudaTorch(_FakeTorch):
@@ -170,8 +166,8 @@ def test_accel_device_does_not_probe_mps_when_cuda_succeeds(monkeypatch):
     fake_torch = CudaTorch()
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
 
-    assert model_store.accel_device() == "cuda"
-    assert fake_torch.mps_checked is False
+    assert model_store.accel_device() == "mps"
+    assert fake_torch.mps_checked is True
 
 
 def test_uses_gpu_matches_the_successful_device_probe(monkeypatch):
@@ -190,6 +186,7 @@ def test_omnivoice_spec_uses_the_single_model_repository():
 
     assert spec.key == "omnivoice"
     assert [repo.repo_id for repo in spec.repos] == ["k2-fsa/OmniVoice"]
+    assert getattr(spec.repos[0], "revision", None) == "c5fdb5ccb189668d56333f77ba2629f4cd7535f4"
 
 
 def test_downloaded_bytes_only_counts_files_matching_repo_patterns(monkeypatch, tmp_path):
@@ -307,3 +304,64 @@ def test_total_bytes_cache_is_scoped_by_repo_patterns(monkeypatch):
     assert model_store._total_bytes(update) == 23
     assert model_store._total_bytes(onnx) == 31
     assert len(calls) == 2
+
+
+def test_pinned_progress_ignores_main_and_unattributed_partial_files(monkeypatch, tmp_path):
+    from pipeline import model_store
+
+    pinned = tmp_path / "snapshots" / "frozen"
+    latest = tmp_path / "snapshots" / "latest"
+    pinned.mkdir(parents=True)
+    latest.mkdir(parents=True)
+    (pinned / "model.bin").write_bytes(b"p" * 11)
+    (latest / "model.bin").write_bytes(b"n" * 97)
+    (tmp_path / "refs").mkdir()
+    (tmp_path / "refs" / "main").write_text("latest")
+    (tmp_path / "blobs").mkdir()
+    (tmp_path / "blobs" / "unknown.incomplete").write_bytes(b"x" * 23)
+    monkeypatch.setattr(model_store, "_cache_dir", lambda repo_id: tmp_path)
+
+    assert model_store._downloaded_bytes(model_store.RepoSpec("repo", revision="frozen")) == 11
+    assert model_store._downloaded_bytes(model_store.RepoSpec("repo", revision="missing")) == 0
+
+
+def test_total_bytes_uses_requested_revision_and_separates_cached_sizes(monkeypatch):
+    from pipeline import model_store
+
+    class FakeApi:
+        def model_info(self, repo_id, files_metadata, revision=None):
+            return SimpleNamespace(siblings=[
+                SimpleNamespace(rfilename="model.bin", size={None: 97, "frozen": 11}[revision]),
+            ])
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi=FakeApi))
+    assert model_store._total_bytes(model_store.RepoSpec("repo")) == 97
+    assert model_store._total_bytes(model_store.RepoSpec("repo", revision="frozen")) == 11
+
+
+def test_pinned_readiness_does_not_accept_a_different_cached_revision(monkeypatch):
+    from pipeline import model_store
+
+    def snapshot_download(repo_id, *, allow_patterns, local_files_only, revision=None):
+        if revision is not None:
+            raise FileNotFoundError("Only main is cached")
+        return "/cache/snapshots/main"
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=snapshot_download))
+    assert model_store._repo_ready(model_store.RepoSpec("repo")) is True
+    assert model_store._repo_ready(model_store.RepoSpec("repo", revision="frozen")) is False
+
+
+def test_pinned_download_selects_the_frozen_revision(monkeypatch):
+    from pipeline import model_store
+
+    downloaded = []
+
+    def snapshot_download(repo_id, *, allow_patterns, revision=None):
+        downloaded.append((repo_id, revision, allow_patterns))
+        return "/cache/snapshots/frozen"
+
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(snapshot_download=snapshot_download))
+    monkeypatch.setattr(model_store, "accel_device", lambda: "mps")
+    model_store.download(model_store.omnivoice_spec())
+    assert downloaded == [("k2-fsa/OmniVoice", "c5fdb5ccb189668d56333f77ba2629f4cd7535f4", None)]

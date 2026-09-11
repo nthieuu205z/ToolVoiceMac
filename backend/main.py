@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import logging
+import os
+from toolvoice import __version__
+from toolvoice.paths import profile_id
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -33,12 +36,15 @@ async def _lifespan(app: FastAPI):
     if clone == "omnivoice":
         from pipeline import omnivoice_speech
 
+        omnivoice_speech.configure_optimization(
+            settings.omnivoice_optimization, codec_device=settings.omnivoice_codec_device
+        )
         # OmniVoice nạp mất ~30s lần lạnh — nạp nền để job giọng nhân bản đầu khỏi chờ.
         omnivoice_speech.prewarm()
     yield
 
 
-app = FastAPI(title="ToolVietSub", docs_url=None, redoc_url=None, lifespan=_lifespan)
+app = FastAPI(title="ToolVoiceMac", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
 set_binaries(settings.ffmpeg_bin, settings.ffprobe_bin)
 # Giọng nhân bản lưu trong thư mục riêng, sống qua khởi động lại server.
@@ -52,6 +58,11 @@ app.include_router(model.router)
 app.include_router(jobs.router)
 app.include_router(text_jobs.router)
 app.include_router(settings_routes.router)
+
+
+@app.get("/api/toolvoice")
+def tool_identity() -> dict:
+    return {"app": "toolvoice", "version": __version__, "profile_id": profile_id(), "session_id": os.environ.get("TOOLVOICE_SESSION_ID", "")}
 
 
 @app.post("/api/shutdown")

@@ -38,3 +38,12 @@ class JobRunResult:
 
 
 JobRunner = Callable[[object, ProgressFn, CancelFn], JobRunResult]
+
+
+def normalize_job_name(value: str | None) -> str:
+    if value is None:
+        return ""
+    name = value.strip()
+    if not 1 <= len(name) <= 80:
+        raise ValueError("Tên công việc phải có từ 1 đến 80 ký tự.")
+    return name

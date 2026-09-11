@@ -12,6 +12,8 @@ lúc server chết được đánh dấu lỗi khi khôi phục (thread của n�
 
 from __future__ import annotations
 
+from pipeline.omnivoice_settings import OmniVoiceSettings
+
 import json
 import logging
 import shutil
@@ -156,9 +158,12 @@ class Job:
     filename: str
     workdir: Path
     voice_id: str
+    omnivoice_settings: OmniVoiceSettings | None = None
     job_type: str = "video_dubbing"
     target_language: str = "vi-VN"
     input_label: str = ""
+    name: str = ""
+    is_project: bool = False
     status: str = "queued"  # queued | running | cancelling | cancelled | done | error
     stage: str = "extract"
     percent: float = 0.0
@@ -386,9 +391,12 @@ class Job:
                 "message": self.message,
                 "filename": self.filename,
                 "input_label": self.input_label,
+                "name": self.name,
+                "is_project": self.is_project,
                 "job_type": self.job_type,
                 "target_language": self.target_language,
                 "voice_id": self.voice_id,
+                "omnivoice_settings": self.omnivoice_settings.model_dump() if self.omnivoice_settings else None,
                 "created_at": round(self.created_at, 3),
                 "artifacts": [artifact.public() for artifact in self.artifacts],
                 "warnings": self.warnings,
@@ -475,7 +483,10 @@ class JobManager:
         workdir: Path,
         voice_id: str,
         backend_factory,
+        omnivoice_settings: OmniVoiceSettings | None = None,
         input_label: str = "",
+        name: str = "",
+        is_project: bool = False,
         job_type: str = "video_dubbing",
         target_language: str = "vi-VN",
         runner: JobRunner | None = None,
@@ -517,10 +528,13 @@ class JobManager:
             id=job_id or uuid.uuid4().hex[:12],
             filename=filename,
             input_label=input_label or filename,
+            name=name,
+            is_project=is_project,
             job_type=job_type,
             target_language=target_language,
             workdir=workdir,
             voice_id=voice_id,
+            omnivoice_settings=omnivoice_settings,
             stage=STAGES_BY_JOB_TYPE[job_type][0],
         )
         with self._lock:
@@ -691,6 +705,13 @@ class JobManager:
 
     def _persist(self, job: Job) -> None:
         """Ghi trạng thái xuống thư mục của job. Đĩa hỏng không được phép giết pipeline."""
+        if job.is_project and job.status in ("error", "cancelled"):
+            from pipeline.speech_project import fail_project
+
+            try:
+                fail_project(job.workdir, job.status, job.message)
+            except (OSError, ValueError, RuntimeError) as exc:
+                log.warning("Không cập nhật được manifest dự án %s: %s", job.id, exc)
         with job.telemetry_lock:
             data = job.snapshot()
             persisted_artifacts = []
@@ -734,9 +755,12 @@ class JobManager:
                     filename=data.get("filename", ""),
                     workdir=meta.parent,
                     voice_id=data.get("voice_id", ""),
+                    omnivoice_settings=OmniVoiceSettings.model_validate(data["omnivoice_settings"]) if data.get("omnivoice_settings") is not None else None,
                     job_type=job_type,
                     target_language=target_language,
                     input_label=str(data.get("input_label", data.get("filename", ""))),
+                    name=str(data.get("name") or ""),
+                    is_project=data.get("is_project") is True and job_type == "text_to_voice",
                     status=data.get("status", "error"),
                     stage=data.get("stage", STAGES_BY_JOB_TYPE.get(job_type, ("extract",))[0]),
                     percent=float(data.get("percent", 0.0)),
@@ -782,7 +806,7 @@ class JobManager:
         if not jobs_dir.is_dir():
             return
         active_dirs = {j.workdir.resolve() for j in self._jobs.values()
-                       if j.status in ACTIVE_STATUSES}
+                       if j.status in ACTIVE_STATUSES or j.is_project}
         by_dir = {j.workdir.resolve(): j.id for j in self._jobs.values()}
 
         dirs = sorted(

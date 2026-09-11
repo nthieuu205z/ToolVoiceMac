@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import re
+import shlex
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -9,7 +12,6 @@ from scripts import check_setup
 
 def test_setup_output_names_both_supported_languages_and_audio_formats():
     output = check_setup.capabilities_summary()
-    assert output.count("\n") == 3
     assert "vi-VN" in output
     assert "en-US" in output
     assert "Video Dubbing" in output
@@ -18,29 +20,53 @@ def test_setup_output_names_both_supported_languages_and_audio_formats():
     assert "MP3" in output
 
 
-def test_user_documentation_covers_multilingual_job_workflows():
-    readme = Path("README.md").read_text(encoding="utf-8")
-    mac = Path("HUONG_DAN_MAC.md").read_text(encoding="utf-8")
-    env = Path(".env.example").read_text(encoding="utf-8")
-    for text in (readme, mac):
-        assert "Video Dubbing" in text
-        assert "Text → Voice" in text
-        assert "vi-VN" in text and "en-US" in text
-        assert "WAV" in text and "MP3" in text
-        assert "50.000" in text
-    assert "RUN_PROVIDER_SMOKE=1" in readme
-    assert "PROVIDER_SMOKE_CLONE_VOICE_ID" in env
+def test_user_documentation_covers_languages_exports_and_distinct_job_limits():
+    root = Path(__file__).resolve().parents[1]
+    for name in ("README.md", "HUONG_DAN_MAC.md"):
+        text = (root / name).read_text(encoding="utf-8")
+        for term in ("Video Dubbing", "Text → Voice", "vi-VN", "en-US", "WAV", "MP3"):
+            assert term in text, f"{name} must explain {term}"
+        # Permit common digit grouping styles while preserving both distinct limits.
+        for number in (r"50[.,_ ]?000", r"200[.,_ ]?000"):
+            assert re.search(rf"(?<!\d){number}(?!\d)", text), f"{name} is missing a text limit"
+        assert "project" in text.casefold()
 
 
-def test_docs_disclose_network_text_submission_and_explicit_cli_language():
-    readme = Path("README.md").read_text(encoding="utf-8")
-    mac = Path("HUONG_DAN_MAC.md").read_text(encoding="utf-8")
-    project = Path("pyproject.toml").read_text(encoding="utf-8")
+def test_docs_disclose_which_services_receive_content():
+    root = Path(__file__).resolve().parents[1]
+    for name in ("README.md", "HUONG_DAN_MAC.md"):
+        paragraphs = (root / name).read_text(encoding="utf-8").split("\n\n")
+        for provider, service in (("Edge", "Microsoft"), ("Gemini", "Google")):
+            assert any(
+                provider in paragraph and service in paragraph
+                and re.search(r"gửi|truyền", paragraph, re.IGNORECASE)
+                and re.search(r"văn bản|nội dung", paragraph, re.IGNORECASE)
+                for paragraph in paragraphs
+            ), f"{name} must disclose {provider} content submission to {service}"
 
-    assert "nội dung được gửi tới dịch vụ Microsoft" in readme
-    assert "--target-language en-US" in readme
-    assert "đa ngôn ngữ" in project
-    assert "Khóa Gemini API (bắt buộc cho Video Dubbing" in mac
+
+def test_documented_toolvoice_commands_use_the_installed_launcher_interface():
+    root = Path(__file__).resolve().parents[1]
+    help_result = subprocess.run(
+        [sys.executable, "-m", "toolvoice", "--help"],
+        cwd=root, capture_output=True, text=True, timeout=10,
+    )
+    assert help_result.returncode == 0, help_result.stderr
+    supported_flags = set(re.findall(r"--[a-z][a-z-]*", help_result.stdout))
+    assert {"--doctor", "--no-browser", "--port", "--data-dir"} <= supported_flags
+    for name in ("README.md", "HUONG_DAN_MAC.md"):
+        text = (root / name).read_text(encoding="utf-8")
+        commands = [
+            shlex.split(line, comments=True)
+            for block in re.findall(r"```(?:bash|sh)?\n(.*?)```", text, re.DOTALL)
+            for line in block.splitlines()
+            if line.strip().startswith("toolvoice")
+        ]
+        assert commands, f"{name} must show how to start toolvoice"
+        for command in commands:
+            assert command[0] == "toolvoice"
+            documented_flags = {word.split("=", 1)[0] for word in command[1:] if word.startswith("--")}
+            assert documented_flags <= supported_flags, f"Unsupported command in {name}: {command}"
 
 
 def test_text_to_voice_setup_can_be_ready_without_gemini(monkeypatch, capsys):

@@ -14,15 +14,21 @@ from . import custom_voices
 from .errors import SpeechServiceError
 from .languages import require_language
 from .models import TTS_SAMPLE_RATE
+from .model_store import OMNIVOICE_MODEL_ID, OMNIVOICE_MODEL_REVISION
+from .omnivoice_settings import OmniVoiceSettings
 
 log = logging.getLogger(__name__)
 
 if TTS_SAMPLE_RATE != 24_000:
     raise RuntimeError("OmniVoice cần TTS_SAMPLE_RATE=24000")
 
-_MODEL_ID = "k2-fsa/OmniVoice"
 _MODEL = None
 _MODEL_DEVICE: str | None = None
+_OPTIMIZATION = "none"
+_CODEC_DEVICE = "cpu"
+_MODEL_OPTIMIZATION: str | None = None
+_MODEL_LOADING = False
+_MODEL_ERROR: str | None = None
 _MODEL_LOCK = threading.Lock()
 _INFER_LOCK = threading.Lock()
 _MPS_BATCH_SAFE = True
@@ -32,13 +38,15 @@ _REF_TEXT_LOCKS: dict[str, threading.Lock] = {}
 _REF_TEXT_LOCKS_GUARD = threading.Lock()
 _REF_TEXT_CACHE: dict[tuple[str, str, int], str] = {}
 _REF_TEXT_CACHE_GUARD = threading.Lock()
-_CLONE_PROMPT_CACHE: dict[tuple[str, str, int], object] = {}
+_CLONE_PROMPT_CACHE: dict[tuple[str, str, int, bool], object] = {}
 _CLONE_PROMPT_CACHE_GUARD = threading.Lock()
 
 # OmniVoice upstream nhận list[str]. Cỡ lô này là giới hạn pipeline; trên MPS,
 # model được nạp trên CPU rồi chuyển sang MPS để tránh dispatch trực tiếp.
 _BATCH_KNEE = 8
-_VRAM_PER_ITEM_GB = 0.18
+_SPLIT_MODES = ("split-cfg", "split-cfg-rms", "split-cfg-rms-gqa", "split-cfg-rms-gqa-rope")
+_RMS_MODES = _SPLIT_MODES[1:]
+_GQA_MODES = _SPLIT_MODES[2:]
 
 
 def _accel_device() -> str | None:
@@ -47,63 +55,151 @@ def _accel_device() -> str | None:
     return accel_device()
 
 
+def configure_optimization(mode: str, *, codec_device: str | None = None) -> None:
+    """Select once at application startup; never swap a live singleton."""
+    global _OPTIMIZATION, _CODEC_DEVICE
+    if not isinstance(mode, str) or mode not in ("none", *_SPLIT_MODES):
+        raise ValueError("Unsupported OmniVoice optimization")
+    if codec_device is not None and codec_device not in ("cpu", "mps"):
+        raise ValueError("Unsupported OmniVoice codec device")
+    if not _MODEL_LOCK.acquire(blocking=False):
+        raise RuntimeError("Restart required to change OmniVoice optimization during loading")
+    try:
+        requested_codec = _CODEC_DEVICE if codec_device is None else codec_device
+        if _MODEL is not None and (mode != _OPTIMIZATION or requested_codec != _CODEC_DEVICE):
+            raise RuntimeError("Restart required to change OmniVoice runtime configuration")
+        _OPTIMIZATION = mode
+        _CODEC_DEVICE = requested_codec
+    finally:
+        _MODEL_LOCK.release()
+
+
+def _configured_batch_ceiling() -> int:
+    ceiling = _MPS_BATCH_LIMIT or _BATCH_KNEE
+    return min(ceiling, 2) if _OPTIMIZATION in _SPLIT_MODES else ceiling
+
+
+def runtime_status() -> dict:
+    """Content-free snapshot; never loads a model or waits for model loading."""
+    loaded = _MODEL is not None
+    state = "ready" if loaded else "loading" if _MODEL_LOADING else "error" if _MODEL_ERROR else "not_loaded"
+    batch = _configured_batch_ceiling()
+    if not _MPS_SINGLE_SAFE or (_MODEL_DEVICE is not None and _MODEL_DEVICE == "cpu"):
+        batch = 0
+    elif not _MPS_BATCH_SAFE:
+        batch = 1
+    return {
+        "requested_optimization": _OPTIMIZATION,
+        "loaded_optimization": _MODEL_OPTIMIZATION if loaded else None,
+        "state": state,
+        "device": _MODEL_DEVICE if loaded else None,
+        "requested_codec_device": _CODEC_DEVICE,
+        "codec_device": _tokenizer_device(_MODEL) if loaded else None,
+        "batch_ceiling": batch,
+        "experimental": _OPTIMIZATION in _SPLIT_MODES,
+        "error": _MODEL_ERROR,
+    }
+
+
 def _get_model():
     """Nạp một model singleton trên accelerator đã được probe."""
-    global _MODEL, _MODEL_DEVICE
+    global _MODEL, _MODEL_DEVICE, _MODEL_OPTIMIZATION, _MODEL_LOADING, _MODEL_ERROR
     with _MODEL_LOCK:
         if _MODEL is not None:
             return _MODEL
-
+        _MODEL_LOADING = True
+        _MODEL_ERROR = None
         try:
-            from omnivoice import OmniVoice
-            import torch
-        except Exception as exc:
-            raise SpeechServiceError(
-                "Chưa cài đủ OmniVoice và PyTorch",
-                user_message=(
-                    "Chưa cài đủ OmniVoice và PyTorch. Hãy chạy "
-                    "`uv pip install -e '.[omnivoice]'` theo README."
-                ),
-            ) from exc
+            try:
+                from omnivoice import OmniVoice
+                import torch
+            except Exception as exc:
+                raise SpeechServiceError(
+                    "Chưa cài đủ OmniVoice và PyTorch",
+                    user_message=(
+                        "Chưa cài đủ OmniVoice và PyTorch. Hãy chạy "
+                        "`uv pip install -e '.[omnivoice]'` theo README."
+                    ),
+                ) from exc
 
-        accelerator = _accel_device()
-        # MPS is supported by this model only through the staged loader below;
-        # direct accelerate dispatch has crashed natively in observed runs.
-        device = "cpu"
-        if accelerator == "cuda":
-            device = "cuda:0"
-        elif accelerator == "mps":
-            device = "mps"
-        dtype = torch.float16 if accelerator in {"cuda", "mps"} else torch.float32
-        load_device = "cpu" if accelerator == "mps" else device
-        log.info(
-            "Đang nạp OmniVoice trên %s (load=%s; lần đầu sẽ tải model ~3,3 GB)",
-            device,
-            "cpu-staged" if accelerator == "mps" else "direct",
-        )
-        try:
-            _MODEL = OmniVoice.from_pretrained(
-                _MODEL_ID,
+            accelerator = _accel_device()
+            if _CODEC_DEVICE == "mps" and accelerator != "mps":
+                raise SpeechServiceError("Codec MPS yêu cầu GPU Apple MPS khả dụng.")
+            model_class = OmniVoice
+            if _OPTIMIZATION in _SPLIT_MODES:
+                if accelerator != "mps":
+                    message = "Split-CFG thử nghiệm yêu cầu MPS; khởi động lại với chế độ none."
+                    raise SpeechServiceError(message, user_message=message)
+                from .omnivoice_split_cfg import get_split_cfg_class
+
+                try:
+                    model_class = get_split_cfg_class()
+                except RuntimeError:
+                    message = "Source OmniVoice không khớp bản split-CFG đã kiểm chứng; khởi động lại với chế độ none."
+                    raise SpeechServiceError(message, user_message=message) from None
+            # Keep CPU-staged loading; codec placement is independently selectable.
+            device = "mps" if accelerator == "mps" else "cpu"
+            dtype = torch.float16 if accelerator == "mps" else torch.float32
+            load_device = "cpu" if accelerator == "mps" else device
+            log.info("Đang nạp OmniVoice trên %s (load=%s, optimization=%s)",
+                     device, load_device, _OPTIMIZATION)
+            # OmniVoice resolves repo IDs to main before forwarding revision kwargs.
+            # Resolve the frozen snapshot ourselves so its model and codec stay paired.
+            from huggingface_hub import snapshot_download
+            from huggingface_hub.errors import LocalEntryNotFoundError
+
+            try:
+                snapshot = snapshot_download(
+                    OMNIVOICE_MODEL_ID, revision=OMNIVOICE_MODEL_REVISION, local_files_only=True,
+                )
+            except LocalEntryNotFoundError:
+                snapshot = snapshot_download(OMNIVOICE_MODEL_ID, revision=OMNIVOICE_MODEL_REVISION)
+            model = model_class.from_pretrained(
+                snapshot,
                 device_map=load_device,
                 dtype=dtype,
             )
             if accelerator == "mps":
-                tokenizer = getattr(_MODEL, "audio_tokenizer", None)
-                _MODEL = _MODEL.to(device)  # type: ignore[union-attr]
-                # Upstream deliberately keeps this codec on CPU for MPS.
-                _keep_mps_tokenizer_on_cpu(tokenizer)
+                tokenizer = getattr(model, "audio_tokenizer", None)
+                model = model.to(device)
+                if _CODEC_DEVICE == "cpu":
+                    _keep_mps_tokenizer_on_cpu(tokenizer)
+                elif tokenizer is not None:
+                    tokenizer.to("mps")
+            if _OPTIMIZATION in _RMS_MODES:
+                from .omnivoice_mps_norm import enable_native_rms_norm
+
+                count = enable_native_rms_norm(model)
+                log.info("Native MPS RMSNorm enabled on %d modules", count)
+            if _OPTIMIZATION in _GQA_MODES:
+                from .omnivoice_mps_attention import enable_native_mps_gqa
+
+                count = enable_native_mps_gqa(model)
+                log.info("Native MPS grouped attention enabled on %d layers", count)
+            if _OPTIMIZATION == "split-cfg-rms-gqa-rope":
+                from .omnivoice_mps_rope import enable_native_mps_rope
+
+                count = enable_native_mps_rope(model)
+                log.info("Native MPS rotary enabled on %d layers", count)
+            _MODEL_DEVICE = device
+            _MODEL_OPTIMIZATION = _OPTIMIZATION
+            _MODEL = model
             log.info(
-                "OmniVoice ready trên %s (load=%s, batch=%d, tokenizer=%s)",
+                "OmniVoice ready trên %s (load=%s, batch=%d, tokenizer=%s, optimization=%s)",
                 device,
                 "cpu-staged" if accelerator == "mps" else "direct",
                 _auto_batch_size(0),
                 _tokenizer_device(_MODEL),
+                _MODEL_OPTIMIZATION,
             )
         except Exception:
             _MODEL = None
             _MODEL_DEVICE = None
+            _MODEL_OPTIMIZATION = None
+            _MODEL_ERROR = "load_failed"
             raise
-        _MODEL_DEVICE = device
+        finally:
+            _MODEL_LOADING = False
         return _MODEL
 
 
@@ -124,10 +220,15 @@ def _keep_mps_tokenizer_on_cpu(tokenizer) -> None:
 
 def _reset_model_for_tests() -> None:
     """Reset the singleton seam for isolated tests."""
-    global _MODEL, _MODEL_DEVICE
+    global _MODEL, _MODEL_DEVICE, _MODEL_OPTIMIZATION, _MODEL_LOADING, _MODEL_ERROR, _OPTIMIZATION, _CODEC_DEVICE
     with _MODEL_LOCK:
         _MODEL = None
         _MODEL_DEVICE = None
+        _MODEL_OPTIMIZATION = None
+        _MODEL_LOADING = False
+        _MODEL_ERROR = None
+        _OPTIMIZATION = "none"
+        _CODEC_DEVICE = "cpu"
 
 
 def _reset_prompt_cache_for_tests() -> None:
@@ -217,28 +318,13 @@ def _to_pcm16(audio) -> bytes:
 
 
 def _auto_batch_size(override: int) -> int:
-    accelerator = _accel_device()
-    if accelerator is None:
+    if _accel_device() != "mps" or not _MPS_SINGLE_SAFE:
         return 0
-    if accelerator == "mps" and not _MPS_SINGLE_SAFE:
-        return 0
-    if accelerator == "mps" and not _MPS_BATCH_SAFE:
+    if not _MPS_BATCH_SAFE:
         return 1
     if override > 0:
-        if accelerator == "mps":
-            return min(override, _MPS_BATCH_LIMIT or _BATCH_KNEE)
-        return override
-    if accelerator == "mps":
-        return _MPS_BATCH_LIMIT or _BATCH_KNEE
-    if accelerator != "cuda":
-        return 0
-    try:
-        import torch
-
-        free_gb = torch.cuda.mem_get_info()[0] / 1024**3
-    except Exception:
-        return _BATCH_KNEE
-    return max(1, min(_BATCH_KNEE, int(free_gb * 0.75 / _VRAM_PER_ITEM_GB)))
+        return min(override, _configured_batch_ceiling())
+    return _configured_batch_ceiling()
 
 
 class OmniVoiceSynthesizer:
@@ -255,12 +341,14 @@ class OmniVoiceSynthesizer:
         whisper_compute_type: str = "int8",
         num_step: int = 32,
         batch_size: int = 0,
+        generation_settings: OmniVoiceSettings | None = None,
     ):
         self._model = model
         self._transcriber = transcriber
         self._whisper_model = whisper_model
         self._whisper_compute_type = whisper_compute_type
-        self._num_step = num_step
+        self._generation_settings = generation_settings
+        self._num_step = generation_settings.num_step if generation_settings else num_step
         self._batch_override = max(0, batch_size)
         self._ref_cache: dict[str, str] = {}
 
@@ -323,6 +411,13 @@ class OmniVoiceSynthesizer:
                 kwargs: dict[str, Any] = {
                     "language": [upstream_language] * count,
                 }
+                if self._generation_settings is not None:
+                    timing = self._generation_settings
+                    kwargs["speed"] = 1.0 if timing.duration is not None else timing.speed
+                    if timing.duration is not None:
+                        if count != 1:
+                            raise SpeechServiceError("Duration chỉ hỗ trợ một đoạn văn bản.")
+                        kwargs["duration"] = timing.duration
                 if generation_config is None:
                     kwargs.update(
                         num_step=self._num_step,
@@ -361,8 +456,12 @@ class OmniVoiceSynthesizer:
         try:
             from omnivoice.models.omnivoice import OmniVoiceGenerationConfig
         except (ImportError, AttributeError):
+            if self._generation_settings is not None:
+                raise SpeechServiceError("OmniVoice không hỗ trợ cấu hình nâng cao đã chọn.")
             # Test doubles and older package builds may only accept legacy kwargs.
             return None
+        if self._generation_settings is not None:
+            return OmniVoiceGenerationConfig(**self._generation_settings.generation_kwargs())
         return OmniVoiceGenerationConfig(
             num_step=self._num_step,
             postprocess_output=True,
@@ -374,7 +473,8 @@ class OmniVoiceSynthesizer:
             version = sample.stat().st_mtime_ns
         except OSError:
             version = 0
-        key = (voice_id, str(sample), version)
+        preprocess = self._generation_settings.preprocess_prompt if self._generation_settings else True
+        key = (voice_id, str(sample), version, preprocess)
         with _CLONE_PROMPT_CACHE_GUARD:
             cached = _CLONE_PROMPT_CACHE.get(key)
         if cached is not None:
@@ -382,7 +482,7 @@ class OmniVoiceSynthesizer:
         creator = getattr(model, "create_voice_clone_prompt", None)
         if not callable(creator):
             return None
-        prompt = creator(str(sample), ref_text=ref_text, preprocess_prompt=True)
+        prompt = creator(str(sample), ref_text=ref_text, preprocess_prompt=preprocess)
         with _CLONE_PROMPT_CACHE_GUARD:
             _CLONE_PROMPT_CACHE[key] = prompt
         return prompt

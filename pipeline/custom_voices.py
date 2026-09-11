@@ -13,11 +13,15 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import uuid
 import re
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
+
+from .languages import normalize_language_code
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +50,7 @@ class CustomVoice:
     display_name: str
     created_at: float
     supported_languages: tuple[str, ...] = ("vi-VN", "en-US")
+    tags: tuple[str, ...] = ()
 
 
 def slugify(name: str) -> str:
@@ -96,8 +101,10 @@ def list_custom() -> list[CustomVoice]:
                 id=data["id"],
                 display_name=data.get("display_name", data["id"]),
                 created_at=float(data.get("created_at", 0.0)),
+                supported_languages=_validate_languages(data.get("supported_languages", ["vi-VN", "en-US"])),
+                tags=validate_tags(data.get("tags", [])),
             )
-        except (OSError, ValueError, KeyError) as exc:
+        except (OSError, ValueError, KeyError, TypeError) as exc:
             log.warning("Bỏ qua giọng nhân bản hỏng tại %s: %s", meta, exc)
             continue
         if voice.id != meta.stem or not is_custom(voice.id):
@@ -130,19 +137,71 @@ def unique_id(name: str) -> str:
     return f"{base}-{n}"
 
 
-def register(voice_id: str, display_name: str) -> CustomVoice:
-    """Ghi metadata. File mẫu phải đã nằm sẵn ở `sample_path(voice_id)`."""
-    if not is_custom(voice_id):
-        raise ValueError(f"ID giọng nhân bản không hợp lệ: {voice_id}")
-    sample = _store() / f"{voice_id}.wav"
+def validate_name(name: str) -> str:
+    if not isinstance(name, str) or not 1 <= len(name.strip()) <= 40:
+        raise ValueError("Tên giọng phải từ 1 đến 40 ký tự.")
+    return name.strip()
+
+
+def validate_tags(tags) -> tuple[str, ...]:
+    if not isinstance(tags, (list, tuple)) or len(tags) > 8:
+        raise ValueError("Nhãn phải là danh sách tối đa 8 nhãn.")
+    result = []
+    for tag in tags:
+        if not isinstance(tag, str) or not 1 <= len(tag.strip()) <= 24:
+            raise ValueError("Mỗi nhãn phải từ 1 đến 24 ký tự.")
+        tag = tag.strip()
+        if tag not in result:
+            result.append(tag)
+    return tuple(result)
+
+
+def _validate_languages(languages) -> tuple[str, ...]:
+    if not isinstance(languages, (list, tuple)) or not languages:
+        raise ValueError("Giọng phải có ít nhất một ngôn ngữ.")
+    return tuple(dict.fromkeys(normalize_language_code(code) for code in languages))
+
+
+def _write_metadata(voice: CustomVoice) -> None:
+    path = safe_metadata_path(voice.id)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(json.dumps(asdict(voice), ensure_ascii=False), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def register(
+    voice_id: str, display_name: str, *,
+    supported_languages: tuple[str, ...] = ("vi-VN", "en-US"),
+    tags: tuple[str, ...] = (),
+) -> CustomVoice:
+    """Save metadata after the normalized sample exists; old callers remain bilingual."""
+    sample = sample_path(voice_id)
     if not sample.is_file():
         raise FileNotFoundError(sample)
-    voice = CustomVoice(id=voice_id, display_name=display_name, created_at=time.time())
-    safe_metadata_path(voice_id).write_text(
-        json.dumps({"id": voice.id, "display_name": voice.display_name,
-                    "created_at": voice.created_at}, ensure_ascii=False),
-        encoding="utf-8",
+    voice = CustomVoice(
+        id=voice_id, display_name=validate_name(display_name), created_at=time.time(),
+        supported_languages=_validate_languages(supported_languages), tags=validate_tags(tags),
     )
+    _write_metadata(voice)
+    return voice
+
+
+def update(voice_id: str, *, name: str | None = None, language: str | None = None,
+           tags: list[str] | None = None) -> CustomVoice:
+    """Edit descriptive metadata without replacing the sample or changing its identity."""
+    voice = get(voice_id)
+    if voice is None:
+        raise FileNotFoundError(voice_id)
+    voice = replace(
+        voice,
+        display_name=voice.display_name if name is None else validate_name(name),
+        supported_languages=voice.supported_languages if language is None else (normalize_language_code(language),),
+        tags=voice.tags if tags is None else validate_tags(tags),
+    )
+    _write_metadata(voice)
     return voice
 
 

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 import logging
+import json
 
 import numpy as np
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from backend.config import settings
 from pipeline import custom_voices
@@ -25,7 +27,6 @@ log = logging.getLogger(__name__)
 router = APIRouter()
 preview_store = VoicePreviewStore(settings.previews_dir)
 _preview_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="voice-preview")
-_PREVIEW_LANGUAGES = ("vi-VN", "en-US")
 _PREVIEW_TIMEOUT_SECONDS = 30
 
 
@@ -52,9 +53,16 @@ def _preview_path(voice_id: str, language: str = "vi-VN"):
 
 
 def _preview_url(voice_id: str, language: str) -> str:
-    return (
-        f"/api/voices/{voice_id}/preview?language={language}"
-    )
+    url = f"/api/voices/{voice_id}/preview?language={language}"
+    path = preview_store.path(voice_id, language)
+    if not path.is_file() and language == "vi-VN":
+        path = settings.previews_dir / f"{voice_id}.wav"
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return url
+    # Replacing a demo must invalidate an already cached Audio URL.
+    return f"{url}&v={stat.st_mtime_ns:x}-{stat.st_size:x}"
 
 
 def _preview_backend(voice_id: str):
@@ -74,9 +82,11 @@ def _generate_fixed_previews(voice_id: str, languages) -> None:
     preview_store.generate_languages(voice_id, languages, backend)
 
 
-def _generate_preview(voice_id: str) -> None:
+def _generate_preview(voice_id: str, languages: tuple[str, ...] | None = None) -> None:
     """Compatibility hook for background custom-voice preview generation."""
-    _generate_fixed_previews(voice_id, _PREVIEW_LANGUAGES)
+    voice = custom_voices.get(voice_id)
+    if voice is not None:
+        _generate_fixed_previews(voice_id, voice.supported_languages if languages is None else languages)
 
 
 class TextPreviewRequest(BaseModel):
@@ -133,6 +143,8 @@ def list_voices(language: str | None = None) -> list[dict]:
             "display_name": voice.display_name,
             "provider": voice.provider,
             "supported_languages": voice.supported_languages,
+            "tags": voice.tags,
+            "name": (voice.display_name.removesuffix(" — giọng nhân bản") if voice.custom else voice.display_name),
             "preview_url": (
                 selected_url
                 if preview_status.get(selected_language) == "ready"
@@ -169,6 +181,7 @@ def preview_voice(voice_id: str, language: str = "vi-VN") -> FileResponse:
         path,
         media_type="audio/wav",
         filename=f"{voice_id}-{canonical}.wav",
+        headers={"Cache-Control": "no-cache"},
     )
 
 
@@ -187,22 +200,28 @@ def preview_text(voice_id: str, request: TextPreviewRequest) -> Response:
     provider = route_provider(
         voice_id, settings.tts_provider, settings.resolved_clone_provider
     )
+    lease = ExitStack()
     try:
-        with speech_activity.preview(provider):
-            future = _preview_executor.submit(
-                _synthesize_preview_text, preview, voice_id, canonical
-            )
-            try:
-                pcm = future.result(timeout=_PREVIEW_TIMEOUT_SECONDS)
-            except FutureTimeoutError as exc:
-                cancel = getattr(future, "cancel", None)
-                if callable(cancel):
-                    cancel()
-                raise HTTPException(
-                    504, "Tạo bản nghe thử quá thời gian. Hãy thử lại."
-                ) from exc
+        lease.enter_context(speech_activity.preview(provider))
+        future = _preview_executor.submit(
+            _synthesize_preview_text, preview, voice_id, canonical
+        )
     except PreviewBusyError as exc:
+        lease.close()
         raise HTTPException(409, exc.user_message) from exc
+    except BaseException:
+        lease.close()
+        raise
+    # Timing out a request cannot stop a running inference thread. Keep the
+    # provider reserved until actual completion (or successful cancellation).
+    future.add_done_callback(lambda _future: lease.close())
+    try:
+        pcm = future.result(timeout=_PREVIEW_TIMEOUT_SECONDS)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise HTTPException(
+            504, "Tạo bản nghe thử quá thời gian. Hãy thử lại."
+        ) from exc
     return Response(content=pcm_to_wav_bytes(pcm), media_type="audio/wav")
 
 
@@ -222,13 +241,19 @@ def cloning_status() -> dict:
 
 
 @router.post("/api/voices/custom")
-async def create_custom_voice(name: str = Form(...), audio: UploadFile = File(...)) -> dict:
+async def create_custom_voice(
+    name: str = Form(...), audio: UploadFile = File(...),
+    language: str = Form("vi-VN"), tags: str = Form("[]"),
+) -> dict:
     if settings.resolved_clone_provider is None:
         raise HTTPException(400, "Nhân bản giọng đang tắt (CLONE_TTS_PROVIDER=none trong .env).")
 
-    name = name.strip()
-    if not 1 <= len(name) <= 40:
-        raise HTTPException(400, "Tên giọng phải từ 1 đến 40 ký tự.")
+    try:
+        name = custom_voices.validate_name(name)
+        canonical = normalize_language_code(language)
+        parsed_tags = custom_voices.validate_tags(json.loads(tags))
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     raw = await audio.read()
     if not raw:
@@ -238,27 +263,59 @@ async def create_custom_voice(name: str = Form(...), audio: UploadFile = File(..
 
     voice_id = custom_voices.unique_id(name)
     _normalize_sample(raw, voice_id)
-    voice = custom_voices.register(voice_id, name)
+    voice = custom_voices.register(voice_id, name, supported_languages=(canonical,), tags=parsed_tags)
 
     from pipeline.omnivoice_speech import forget_clone
 
     forget_clone(voice_id)
     preview_store.clear(voice_id)
-    for language in _PREVIEW_LANGUAGES:
+    for language in voice.supported_languages:
         preview_store.set_pending(voice_id, language)
-    _preview_executor.submit(_generate_preview, voice_id)
+    _preview_executor.submit(_generate_preview, voice_id, voice.supported_languages)
 
+    return _custom_voice_payload(voice)
+
+
+def _custom_voice_payload(voice: custom_voices.CustomVoice) -> dict:
+    statuses = {code: preview_store.status(voice.id, code) for code in voice.supported_languages}
+    selected = voice.supported_languages[0]
     return {
         "id": voice.id,
+        "name": voice.display_name,
         "display_name": f"{voice.display_name} — giọng nhân bản",
-        "preview_url": "",
-        "preview_urls": {
-            language: _preview_url(voice.id, language)
-            for language in _PREVIEW_LANGUAGES
-        },
-        "preview_status": {language: "pending" for language in _PREVIEW_LANGUAGES},
+        "provider": "omnivoice",
+        "supported_languages": voice.supported_languages,
+        "tags": voice.tags,
+        "preview_url": _preview_url(voice.id, selected) if statuses[selected] == "ready" else "",
+        "preview_urls": {code: _preview_url(voice.id, code) for code in voice.supported_languages},
+        "preview_status": statuses,
         "custom": True,
     }
+
+
+class CustomVoiceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+    language: str | None = None
+    tags: list[str] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_explicit_nulls(cls, values):
+        if isinstance(values, dict) and any(value is None for value in values.values()):
+            raise ValueError("Hãy bỏ qua trường không muốn thay đổi; không dùng null.")
+        return values
+
+
+@router.patch("/api/voices/custom/{voice_id}")
+def update_custom_voice(voice_id: str, request: CustomVoiceUpdate) -> dict:
+    if not custom_voices.is_custom(voice_id) or custom_voices.get(voice_id) is None:
+        raise HTTPException(404, "Không tìm thấy giọng nhân bản này.")
+    try:
+        voice = custom_voices.update(voice_id, **request.model_dump(exclude_unset=True))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return _custom_voice_payload(voice)
 
 
 def _normalize_sample(raw: bytes, voice_id: str) -> None:
@@ -272,9 +329,14 @@ def _normalize_sample(raw: bytes, voice_id: str) -> None:
     if duration < _SAMPLE_MIN_SECONDS:
         raise HTTPException(400, f"Mẫu chỉ dài {duration:.1f} giây — cần ít nhất 3 giây lời nói.")
 
-    keep = int(_SAMPLE_MAX_SECONDS * TTS_SAMPLE_RATE) * 2
-    samples = np.frombuffer(pcm[:keep], dtype="<i2")
-    write_wav(custom_voices.sample_path(voice_id), samples, TTS_SAMPLE_RATE)
+    from pipeline.clone_sample import reference_end
+
+    samples = np.frombuffer(pcm, dtype="<i2")
+    try:
+        end = reference_end(samples, TTS_SAMPLE_RATE, max_seconds=_SAMPLE_MAX_SECONDS)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    write_wav(custom_voices.sample_path(voice_id), samples[:end], TTS_SAMPLE_RATE)
 
 
 @router.delete("/api/voices/custom/{voice_id}")

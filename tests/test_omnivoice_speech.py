@@ -17,6 +17,16 @@ from pipeline.models import TTS_SAMPLE_RATE
 from pipeline.omnivoice_speech import OmniVoiceSynthesizer
 
 
+@pytest.fixture(autouse=True)
+def cached_model_snapshot(monkeypatch, tmp_path):
+    import huggingface_hub
+
+    snapshot = tmp_path / "snapshots" / "c5fdb5ccb189668d56333f77ba2629f4cd7535f4"
+    snapshot.mkdir(parents=True)
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *args, **kwargs: str(snapshot))
+    return snapshot
+
+
 class FakeOmni:
     def __init__(self, audio: np.ndarray | None = None, error: Exception | None = None):
         self.audio = audio if audio is not None else np.full(2400, 0.3, dtype=np.float32)
@@ -260,12 +270,11 @@ def test_model_error_is_wrapped():
         ).synthesize("x", voice_id)
 
 
-def test_batch_override_is_honored_on_cuda_and_mps(monkeypatch):
+def test_batch_override_is_honored_on_mps(monkeypatch):
     import pipeline.omnivoice_speech as ov
 
-    for device in ("cuda", "mps"):
-        monkeypatch.setattr(ov, "_accel_device", lambda device=device: device)
-        assert OmniVoiceSynthesizer(model=FakeOmni(), batch_size=5).batch_size == 5
+    monkeypatch.setattr(ov, "_accel_device", lambda: "mps")
+    assert OmniVoiceSynthesizer(model=FakeOmni(), batch_size=5).batch_size == 5
 
 
 def test_batch_override_is_clamped_to_a_positive_value():
@@ -328,15 +337,56 @@ def test_marking_mps_batch_unsafe_reduces_future_batch_size(monkeypatch):
         ov._MPS_BATCH_SAFE = True
 
 
-def test_cpu_has_no_batch(monkeypatch):
+@pytest.mark.parametrize("accelerator", [None, "cuda"])
+def test_non_mps_device_has_no_batch(monkeypatch, accelerator):
     import pipeline.omnivoice_speech as ov
 
-    monkeypatch.setattr(ov, "_accel_device", lambda: None)
+    monkeypatch.setattr(ov, "_accel_device", lambda: accelerator)
 
     assert OmniVoiceSynthesizer(model=FakeOmni(), batch_size=5).batch_size == 0
 
 
-def test_mps_load_is_staged_through_cpu_then_moved(monkeypatch):
+@pytest.mark.parametrize("accelerator", [None, "cuda"])
+def test_non_mps_model_load_uses_cpu_float32(monkeypatch, accelerator):
+    import sys
+    from types import SimpleNamespace
+    import pipeline.omnivoice_speech as ov
+
+    class LoadedModel:
+        device = "cpu"
+
+        @classmethod
+        def from_pretrained(cls, model_id, *, device_map, dtype):
+            model = cls()
+            model.device = device_map
+            model.dtype = dtype
+            return model
+
+    ov._reset_model_for_tests()
+    monkeypatch.setattr(ov, "_accel_device", lambda: accelerator)
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(float16="float16", float32="float32"))
+    monkeypatch.setitem(sys.modules, "omnivoice", SimpleNamespace(OmniVoice=LoadedModel))
+
+    model = ov._get_model()
+
+    assert (model.device, model.dtype) == ("cpu", "float32")
+    assert ov.model_device() == "cpu"
+
+
+@pytest.mark.parametrize("locally_cached", [True, False])
+def test_mps_load_is_staged_through_cpu_then_moved(monkeypatch, cached_model_snapshot, locally_cached):
+    import huggingface_hub
+    from huggingface_hub.errors import LocalEntryNotFoundError
+
+    requests = []
+
+    def pinned_snapshot(repo_id, *, revision=None, local_files_only=False):
+        requests.append((repo_id, revision, local_files_only))
+        if local_files_only and not locally_cached:
+            raise LocalEntryNotFoundError("Pinned snapshot not cached")
+        return str(cached_model_snapshot)
+
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", pinned_snapshot)
     import sys
     import types
     import pipeline.omnivoice_speech as ov
@@ -384,6 +434,11 @@ def test_mps_load_is_staged_through_cpu_then_moved(monkeypatch):
 
     ov._get_model()
 
+    assert requests == [
+        ("k2-fsa/OmniVoice", "c5fdb5ccb189668d56333f77ba2629f4cd7535f4", offline)
+        for offline in ([True] if locally_cached else [True, False])
+    ]
+    assert FakeOmniVoice.args == (str(cached_model_snapshot),)
     assert FakeOmniVoice.kwargs["device_map"] == "cpu"
     assert FakeOmniVoice.kwargs["dtype"] == "float16"
     assert FakeOmniVoice.model.to_calls[-1] == "mps"

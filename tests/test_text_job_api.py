@@ -82,11 +82,11 @@ def test_text_job_rejects_unsupported_voice_language_pair(client, jobs_dir):
     assert list(jobs_dir.iterdir()) == []
 
 
-def test_text_job_rejects_more_than_50000_characters(client, jobs_dir):
+def test_text_job_rejects_more_than_200000_characters(client, jobs_dir):
     response = client.post(
         "/api/jobs/text",
         json={
-            "text": "x" * 50_001,
+            "text": "x" * 200_001,
             "voice_id": "en-US-AvaMultilingualNeural",
             "language": "en-US",
         },

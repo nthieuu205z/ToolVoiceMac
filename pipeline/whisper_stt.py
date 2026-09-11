@@ -4,13 +4,8 @@ Vì sao không dùng mốc thời gian của Whisper: ffmpeg đã cho ranh giớ
 (xem pipeline/segmentation.py). Whisper chỉ được giao đúng một việc là chép chữ cho từng
 vùng đã cắt sẵn, nên không cần tin vào mốc thời gian của nó.
 
-Chạy trên CUDA khi máy có card NVIDIA. Đo trên video 18,9 phút, model `small`:
-
-    CPU (int8)   : 268 giây
-    GPU (float16):  81 giây     ← nhanh gấp 3,3 lần
-
-Trước đây file này ghim cứng device="cpu", nên Whisper chậm tới mức không dùng nổi và
-người dùng buộc phải trả tiền cho Gemini. Trên máy không có CUDA thì vẫn tự lùi về CPU.
+Whisper dùng CPU/int8 trên Mac vì faster-whisper không hỗ trợ MPS.
+Gộp lô CPU mặc định 8 vùng để giữ tốc độ và mốc câu.
 """
 
 from __future__ import annotations
@@ -31,10 +26,6 @@ _load_lock = threading.Lock()
 _infer_lock = threading.Lock()
 
 
-# Bật lên khi GPU đã CHỨNG MINH là không dùng được. Từ đó mọi lượt đi thẳng lên CPU thay vì
-# thử lại rồi ngã lại cho từng đoạn — hỏng 150 lần trên cùng một lý do thì chậm hơn hẳn CPU.
-_gpu_bi_loai = False
-
 # CPU batched inference is materially faster on Apple Silicon even though
 # faster-whisper itself cannot place the model on MPS. Keep a conservative
 # default/ceiling; the batch is measured in feature chunks, not model copies.
@@ -51,81 +42,20 @@ def _clamp_cpu_batch_size(value: int) -> int:
 
 
 def _thiet_bi() -> tuple[str, str]:
-    """(device, compute_type) hợp với máy này.
-
-    CTranslate2 (lõi của faster-whisper) cần cuDNN 9 + cuBLAS 12. Trên Windows, các DLL đó
-    nằm sẵn trong gói torch bản CUDA — nhưng chỉ tìm thấy được SAU KHI import torch, vì
-    chính torch gọi os.add_dll_directory cho thư mục lib của nó. Nên phải import torch
-    trước, dù file này không dùng tensor nào.
-
-    Ràng buộc ngầm, và nó ĐẮT: `cuBLAS 12` nghĩa là torch phải là bản CUDA **12.x**, vì bản
-    CUDA 13 mang `cublas64_13.dll` — tên khác, CTranslate2 không thấy và ngã ngay lượt chép
-    lời đầu tiên. Card Blackwell (RTX 50xx, sm_120) lại đòi CUDA ≥ 12.8. Giao của hai điều
-    kiện chỉ còn CUDA 12.8/12.9 — đó là lý do dự án ghim `cu129` chứ không lấy bản mới nhất.
-    """
-    if _gpu_bi_loai:
-        return "cpu", "int8"
-    from .model_store import accel_device
-
-    # Whisper/faster-whisper dùng CTranslate2, hiện không có backend MPS/CoreML.
-    # Chỉ nhận CUDA khi probe chung đã chạy được phép tính thật; MPS phải giữ CPU.
-    return ("cuda", "float16") if accel_device() == "cuda" else ("cpu", "int8")
-
-
-def _loai_gpu(exc: Exception) -> None:
-    """Rớt hẳn về CPU sau khi GPU tỏ ra không dùng được — không hỏi lại nữa."""
-    global _gpu_bi_loai
-    if _gpu_bi_loai:
-        return
-    _gpu_bi_loai = True
-    _get_pipeline.cache_clear()
-    log.warning(
-        "Whisper không chạy được trên GPU (%s) — chuyển hẳn sang CPU tới khi khởi động lại. "
-        "Thường là torch sai bản CUDA: CTranslate2 cần cuBLAS 12 (torch cu126/cu129), "
-        "bản cu130 trở lên mang cuBLAS 13 nên không dùng được.", exc)
+    """faster-whisper dùng CPU trên Mac; MPS dành cho OmniVoice."""
+    return "cpu", "int8"
 
 
 def _get_model(name: str, compute_type: str):
-    device, dtype_gpu = _thiet_bi()
-    # compute_type từ .env chỉ có nghĩa trên CPU; GPU luôn dùng float16 (int8 trên CUDA
-    # vừa chậm hơn vừa kém chính xác hơn với CTranslate2).
-    ct = dtype_gpu if device == "cuda" else compute_type
-
-    key = (name, ct)
+    device, _ = _thiet_bi()
+    key = (name, compute_type)
     with _load_lock:
         if key not in _models:
             from faster_whisper import WhisperModel  # nạp muộn: import nặng
 
             log.info("Đang nạp Whisper '%s' trên %s (lần đầu sẽ tải model về)", name, device.upper())
-            _models[key] = WhisperModel(name, device=device, compute_type=ct)
+            _models[key] = WhisperModel(name, device=device, compute_type=compute_type)
         return _models[key]
-
-
-def batch_size() -> int:
-    """Số vùng chép lời trong MỘT lượt gọi GPU. 0 = chép từng vùng một (CPU).
-
-    Whisper cũng bị nghẽn ở chi phí PHÓNG kernel chứ không phải
-    sức tính. Đo trên video 18,9 phút (152 vùng), RTX 3090:
-
-        từng vùng một      : 67 giây   (GPU 34%, 151W)
-        gộp lô 32 vùng     :  7 giây   (GPU 65%, 254W)   ← nhanh gấp 9,4 lần
-
-    Chạy đa luồng KHÔNG cứu được (đã đo: num_workers 1→8 chỉ nhanh gấp 1,2 lần rồi chững).
-
-    Cỡ lô suy ra từ VRAM còn trống (tự thích nghi mọi card) thay vì ghim 32; card lớn chạy
-    lô lớn hơn. Whisper 'small' gộp lô tốn ~0,2 GB/vùng; chừa 30%, trần 48 (knee thuật toán).
-    """
-    device, _ = _thiet_bi()
-    if device != "cuda":
-        return 0
-    try:
-        import torch
-
-        free_gb = torch.cuda.mem_get_info()[0] / 1024**3
-    except Exception:
-        return 16
-    n = int(free_gb * 0.7 / 0.2)
-    return max(8, min(n, 48))
 
 
 @lru_cache(maxsize=1)
@@ -138,9 +68,7 @@ def _get_pipeline(model):
 def prewarm(model: str = "small", compute_type: str = "int8") -> None:
     """Nạp model Whisper trong luồng nền lúc server khởi động — job đầu khỏi chờ tải model.
 
-    Đo thật: lần nhận diện đầu tốn ~24s, trong đó ~11s chỉ để nạp model + khởi tạo cuDNN;
-    phần chép lời thật chỉ ~13s. Nạp sẵn từ lúc boot để job đầu chỉ
-    còn phần tính. Chỉ nạp khi model đã nằm trên đĩa — không tự ý tải 484 MB lúc boot.
+    Chỉ nạp khi model đã nằm trên đĩa — không tự ý tải 484 MB lúc boot.
     """
     from .model_store import is_ready, whisper_spec
 
@@ -214,7 +142,7 @@ def _vung_chua(regions: list, boundaries: list[tuple[float, float]], start: floa
 class WhisperTranscriber:
     """Chép lời cho từng đoạn audio ngắn. Bám giao thức `transcribe_clip` của pipeline.
 
-    Trên GPU còn phơi thêm `transcribe_batch` — pipeline/stt.py sẽ ưu tiên dùng nó.
+    Gộp lô CPU qua `transcribe_batch` — pipeline/stt.py sẽ ưu tiên dùng nó.
     """
 
     def __init__(self, model: str = "small", compute_type: str = "int8",
@@ -225,16 +153,11 @@ class WhisperTranscriber:
 
     @property
     def stt_batch_size(self) -> int:
-        device, _ = _thiet_bi()
-        if device == "cuda":
-            return batch_size()
-        if device == "cpu":
-            return self._cpu_batch_size
-        return 0
+        return self._cpu_batch_size
 
     @property
     def stt_timed(self) -> bool:
-        """BatchedInferencePipeline giữ được mốc câu trên cả CPU và CUDA."""
+        """BatchedInferencePipeline giữ được mốc câu trên CPU."""
         return self.stt_batch_size > 0
 
     def _chep(self, wav_path: Path) -> tuple[str, str]:
@@ -248,19 +171,10 @@ class WhisperTranscriber:
         return info.language or "", text.strip()
 
     def transcribe_clip(self, wav_path: Path) -> tuple[str, str]:
-        # GPU có thể nạp model trót lọt rồi mới ngã ở phép tính đầu tiên (thiếu cuBLAS chẳng
-        # hạn) — nên lưới an toàn phải ở đây, lúc CHẠY, chứ không phải lúc nạp.
-        dung_gpu = _thiet_bi()[0] == "cuda"
-        try:
-            return self._chep(wav_path)
-        except Exception as exc:
-            if not dung_gpu or _gpu_bi_loai:
-                raise
-            _loai_gpu(exc)
-            return self._chep(wav_path)   # lần này chắc chắn chạy trên CPU
+        return self._chep(wav_path)
 
     def transcribe_batch(self, samples, rate: int, regions: list) -> list[tuple[str, str]]:
-        """Chép lời cho NHIỀU vùng trong một lượt gọi GPU. Trả về [(ngôn ngữ, lời)] đúng thứ tự.
+        """Chép lời cho NHIỀU vùng trong một lượt gộp lô CPU. Trả về [(ngôn ngữ, lời)] đúng thứ tự.
 
         Mốc thời gian vẫn do ffmpeg quyết định — ta truyền thẳng chúng vào `clip_timestamps`
         nên Whisper không được phép tự cắt lại. Nguyên tắc của dự án giữ nguyên: ffmpeg lo
@@ -277,22 +191,14 @@ class WhisperTranscriber:
         moc = [{"start": r.start, "end": r.end} for r in regions]
         bien = [(r.start, r.end) for r in regions]
 
-        try:
-            with _infer_lock:
-                segments, info = pipe.transcribe(audio, clip_timestamps=moc,
-                                                 batch_size=self.stt_batch_size)
-                chu: list[list[str]] = [[] for _ in regions]
-                for seg in segments:
-                    i = _vung_chua(regions, bien, seg.start, seg.end)
-                    if i is not None:
-                        chu[i].append(seg.text.strip())
-        except Exception as exc:
-            # Không thử lại cả lô ở đây: sau khi rớt về CPU thì batch_size() = 0, đường gộp lô
-            # không còn nghĩa gì. Chỉ hạ cờ rồi ném lên — pipeline/stt.py vốn đã có sẵn đường
-            # lùi "lô hỏng → chép lại từng đoạn một", và các đoạn đó giờ sẽ chạy trên CPU.
-            if _thiet_bi()[0] == "cuda":
-                _loai_gpu(exc)
-            raise
+        with _infer_lock:
+            segments, info = pipe.transcribe(audio, clip_timestamps=moc,
+                                             batch_size=self.stt_batch_size)
+            chu: list[list[str]] = [[] for _ in regions]
+            for seg in segments:
+                i = _vung_chua(regions, bien, seg.start, seg.end)
+                if i is not None:
+                    chu[i].append(seg.text.strip())
 
         lang = info.language or ""
         return [(lang, " ".join(c).strip()) for c in chu]
@@ -317,25 +223,20 @@ class WhisperTranscriber:
         moc = [{"start": r.start, "end": r.end} for r in regions]
         bien = [(r.start, r.end) for r in regions]
 
-        try:
-            with _infer_lock:
-                segments, info = pipe.transcribe(audio, clip_timestamps=moc,
-                                                 batch_size=self.stt_batch_size,
-                                                 word_timestamps=True)
-                pieces: list[tuple[float, float, str]] = []
-                for seg in segments:
-                    words = [(float(w.start), float(w.end), w.word)
-                             for w in (getattr(seg, "words", None) or [])]
-                    # Không có mốc từ (hiếm) → giữ cả segment làm một câu, đừng bỏ lời thoại.
-                    cau = sentences_from_words(words) if words else (
-                        [(float(seg.start), float(seg.end), seg.text.strip())]
-                        if seg.text.strip() else [])
-                    for s, e, t in cau:
-                        if t.strip() and _vung_chua(regions, bien, s, e) is not None:
-                            pieces.append((s, e, t.strip()))
-        except Exception as exc:
-            if _thiet_bi()[0] == "cuda":
-                _loai_gpu(exc)
-            raise
+        with _infer_lock:
+            segments, info = pipe.transcribe(audio, clip_timestamps=moc,
+                                             batch_size=self.stt_batch_size,
+                                             word_timestamps=True)
+            pieces: list[tuple[float, float, str]] = []
+            for seg in segments:
+                words = [(float(w.start), float(w.end), w.word)
+                         for w in (getattr(seg, "words", None) or [])]
+                # Không có mốc từ (hiếm) → giữ cả segment làm một câu, đừng bỏ lời thoại.
+                cau = sentences_from_words(words) if words else (
+                    [(float(seg.start), float(seg.end), seg.text.strip())]
+                    if seg.text.strip() else [])
+                for s, e, t in cau:
+                    if t.strip() and _vung_chua(regions, bien, s, e) is not None:
+                        pieces.append((s, e, t.strip()))
 
         return info.language or "", pieces

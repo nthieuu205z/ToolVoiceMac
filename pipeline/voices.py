@@ -21,6 +21,7 @@ class Voice:
     native_id: str = ""
     provider: str = ""
     supported_languages: tuple[str, ...] = ("vi-VN",)
+    tags: tuple[str, ...] = ()
 
     @property
     def native(self) -> str:
@@ -111,7 +112,7 @@ def _clone_voices() -> list[Voice]:
 
     return [
         Voice(c.id, f"{c.display_name} — giọng nhân bản", c.id,
-              provider="omnivoice", supported_languages=c.supported_languages)
+              provider="omnivoice", supported_languages=c.supported_languages, tags=c.tags)
         for c in custom_voices.list_custom()
     ]
 
